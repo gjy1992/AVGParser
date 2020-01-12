@@ -1,0 +1,16 @@
+﻿*start
+[macro name=test]
+测试
+[test2]
+[endmacro]
+
+[macro name=test2]
+嵌套
+[endmacro]
+[test][test]
+@test
+@jump target=*next
+测试文字
+*next
+@emb exp="1+2"
+显示功能。
