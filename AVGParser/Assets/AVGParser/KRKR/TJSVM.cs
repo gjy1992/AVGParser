@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using AVGParser;
+using System.Reflection;
 
 namespace AVGParser.KRKR
 {
@@ -162,7 +162,7 @@ namespace AVGParser.KRKR
         VM_TOMINUSNUM,
         VM_TOSTRING,
         VM_TONUMBER,
-        
+
         VM_INC,         //a=++b
         VM_DEC,
         VM_POSTINC,     //a=b++
@@ -173,6 +173,7 @@ namespace AVGParser.KRKR
         VM_MAKEARRAY,   //[a,a+1,...,b-1]
         VM_MAKEDIC,     //[a,a+1,...,b-1]
         VM_MAKEFUNC,    //[a,b,...,c-1],a is function, b... is default param
+        VM_SETFUNCCLOSURE,  //set closure for [a]
 
         VM_NEW,
         VM_TYPEOF,
@@ -183,6 +184,7 @@ namespace AVGParser.KRKR
         VM_SUPERDOT,
 
         VM_REGVAR,      //stack[a] <=> var consts[b]
+        VM_REGUPVALUE,  //consts[a] is upvalue
 
         VM_NULL,
     }
@@ -211,7 +213,7 @@ namespace AVGParser.KRKR
             get
             {
                 string trace = "";
-                for(int i=0;i<traces.Count;i++)
+                for (int i = 0; i < traces.Count; i++)
                 {
                     trace += string.Format("\nin Line {0}, Pos{1}", traces[i].line, traces[i].offset);
                 }
@@ -244,6 +246,16 @@ namespace AVGParser.KRKR
             throw new TJSException($"cannot set value of member {name}");
         }
 
+        public virtual void RemoveField(string name)
+        {
+            throw new TJSException($"cannot remove member {name}");
+        }
+
+        public virtual void RemoveField(int name)
+        {
+            throw new TJSException($"cannot remove member {name}");
+        }
+
         public virtual TJSVariable CallAsFunc(TJSVariable[] param, int start, int length)
         {
             throw new TJSException("cannot be called");
@@ -265,7 +277,16 @@ namespace AVGParser.KRKR
 
         internal TJSIL ilcode = null;
 
-        internal List<TJSVariable> defaultParam = null;
+        internal TJSVariable[] defaultParam = null;
+
+        public TJSFunction(TJSFunction func)
+        {
+            closure = func.closure;
+            _this = func._this;
+            nativefunc = func.nativefunc;
+            ilcode = func.ilcode;
+            defaultParam = func.defaultParam;
+        }
 
         public TJSFunction(Func<TJSVariable, TJSVariable[], int, int, TJSVariable> native, TJSVariable _this)
         {
@@ -292,7 +313,26 @@ namespace AVGParser.KRKR
         {
             if (nativefunc != null)
                 return nativefunc.Invoke(_this, param, start, length);
-            return TJSVM.VM.Run(ilcode, closure, _this, defaultParam);
+            if (defaultParam == null)
+            {
+                return TJSVM.VM.Run(ilcode, closure, _this, null);
+            }
+            else
+            {
+                var p = new TJSVariable[defaultParam.Length];
+                for (int i = 0; i < p.Length; i++)
+                {
+                    if (i < length)
+                    {
+                        p[i] = param[i + start];
+                    }
+                    else
+                    {
+                        p[i] = defaultParam[i];
+                    }
+                }
+                return TJSVM.VM.Run(ilcode, closure, _this, p);
+            }
         }
 
         public override VarType GetVarType()
@@ -320,7 +360,7 @@ namespace AVGParser.KRKR
         {
             if (hasMember(name))
                 return getMember(name);
-            if(parent != null)
+            if (parent != null)
                 return parent.GetField(name);
             return new TJSVariable(VarType.UNDEFINED);
         }
@@ -343,7 +383,10 @@ namespace AVGParser.KRKR
                 return;
             }
             if (parent != null)
+            {
                 parent.SetField(name, value);
+                return;
+            }
             setMember(name, value);
         }
 
@@ -357,7 +400,7 @@ namespace AVGParser.KRKR
     {
         internal Dictionary<string, TJSVariable> dic = new Dictionary<string, TJSVariable>();
 
-        public TJSNormalClosure(TJSClosure p): base(p)
+        public TJSNormalClosure(TJSClosure p) : base(p)
         {
 
         }
@@ -376,13 +419,32 @@ namespace AVGParser.KRKR
         {
             dic[name] = value;
         }
+
+        public override void RemoveField(int name)
+        {
+            RemoveField(name.ToString());
+        }
+
+        public override void RemoveField(string name)
+        {
+            if (dic.ContainsKey(name))
+                dic.Remove(name);
+        }
     }
 
     public class TJSStackClosure : TJSClosure
     {
         internal Dictionary<string, int> localvar = null;
 
-        internal List<TJSVariable> localStack = null;
+        internal class UpValueClass
+        {
+            internal TJSVariable[] stack;
+            internal int index;
+        }
+
+        internal Dictionary<string, UpValueClass> upvalues = null;
+
+        internal TJSVariable[] localStack = null;
 
         public TJSStackClosure(TJSClosure p) : base(p)
         {
@@ -396,12 +458,45 @@ namespace AVGParser.KRKR
 
         public override bool hasMember(string name)
         {
-            return localvar.ContainsKey(name);
+            return localvar != null && localvar.ContainsKey(name);
         }
 
         public override void setMember(string name, TJSVariable value)
         {
             localStack[localvar[name]] = value;
+        }
+
+        bool QueryUpValue(string name, out TJSVariable[] stack, out int index)
+        {
+            if (localvar != null)
+            {
+                if (localvar.ContainsKey(name))
+                {
+                    stack = localStack;
+                    index = localvar[name];
+                    return true;
+                }
+                if (parent != null && (parent is TJSStackClosure))
+                {
+                    return ((TJSStackClosure)parent).QueryUpValue(name, out stack, out index);
+                }
+            }
+            stack = null;
+            index = 0;
+            return false;
+        }
+
+        public void RegUpValue(string name)
+        {
+            if (parent == null || !(parent is TJSStackClosure))
+                return;
+            bool res = ((TJSStackClosure)parent).QueryUpValue(name, out TJSVariable[] stack, out int index);
+            if (res)
+            {
+                if (upvalues == null)
+                    upvalues = new Dictionary<string, UpValueClass>();
+                upvalues[name] = new UpValueClass { index = index, stack = stack };
+            }
         }
     }
 
@@ -430,7 +525,7 @@ namespace AVGParser.KRKR
 
         public override void SetField(int name, TJSVariable value)
         {
-            if(name >= arr.Count)
+            if (name >= arr.Count)
             {
                 while (arr.Count < name)
                 {
@@ -438,11 +533,11 @@ namespace AVGParser.KRKR
                 }
                 arr.Add(value);
             }
-            else if(name>=0)
+            else if (name >= 0)
             {
                 arr[name] = value;
             }
-            else if(name>=-arr.Count)
+            else if (name >= -arr.Count)
             {
                 arr[name + arr.Count] = value;
             }
@@ -465,6 +560,25 @@ namespace AVGParser.KRKR
             bool r = int.TryParse(name, out idx);
             if (r)
                 SetField(idx, value);
+            throw new TJSException("invalid index");
+        }
+
+        public override void RemoveField(int name)
+        {
+            if (name >= arr.Count || name < -arr.Count)
+                throw new TJSException("index overflow");
+            if (name < 0)
+                name += arr.Count;
+            arr.RemoveAt(name);
+        }
+
+        public override void RemoveField(string name)
+        {
+            int idx = 0;
+            bool r = int.TryParse(name, out idx);
+            if (r)
+                RemoveField(idx);
+            throw new TJSException("invalid index");
         }
     }
 
@@ -503,6 +617,17 @@ namespace AVGParser.KRKR
         {
             SetField(name.ToString(), value);
         }
+
+        public override void RemoveField(int name)
+        {
+            RemoveField(name.ToString());
+        }
+
+        public override void RemoveField(string name)
+        {
+            if (dic.ContainsKey(name))
+                dic.Remove(name);
+        }
     }
 
     public class TJSClass : TJSNormalClosure
@@ -517,9 +642,21 @@ namespace AVGParser.KRKR
 
         internal Dictionary<string, TJSVariable> propAndFunc = new Dictionary<string, TJSVariable>();
 
-        public TJSClass():base(null)
+        public TJSClass() : base(null)
         {
 
+        }
+
+        public bool IsInctanceOf(string name)
+        {
+            if (this.name == name || name == "object")
+                return true;
+            foreach (var it in parentClass)
+            {
+                if (it.IsInctanceOf(name))
+                    return true;
+            }
+            return false;
         }
 
         public override VarType GetVarType()
@@ -536,7 +673,7 @@ namespace AVGParser.KRKR
             }
             if (parentClass != null)
             {
-                foreach(var p in parentClass)
+                foreach (var p in parentClass)
                 {
                     if (p.hasMemberFunc(name, out v))
                         return true;
@@ -557,14 +694,14 @@ namespace AVGParser.KRKR
                 return propAndFunc[name];
             if (defindeVars.ContainsKey(name))
                 return defindeVars[name];
-            if(parentClass != null)
+            if (parentClass != null)
             {
                 TJSVariable v;
                 foreach (var p in parentClass)
                 {
                     if (p.hasMemberFunc(name, out v))
                     {
-                        if(v.vt == VarType.FUNCTION)
+                        if (v.vt == VarType.FUNCTION)
                         {
                             v = new TJSVariable(new TJSFunction((TJSFunction)v.obj, this, new TJSVariable(this)));
                             return v;
@@ -583,6 +720,17 @@ namespace AVGParser.KRKR
         public override void SetField(string name, TJSVariable value)
         {
             defindeVars[name] = value;
+        }
+
+        public override void RemoveField(int name)
+        {
+            RemoveField(name.ToString());
+        }
+
+        public override void RemoveField(string name)
+        {
+            if (propAndFunc.ContainsKey(name))
+                propAndFunc.Remove(name);
         }
     }
 
@@ -609,16 +757,16 @@ namespace AVGParser.KRKR
 
         public override TJSVariable GetField(string name)
         {
-            switch(name)
+            switch (name)
             {
                 case "length":
                     return new TJSVariable(str.Length);
                 default:
                     {
                         TJSVariable v;
-                        if(TJSVM.VM.strClass.hasMemberFunc(name, out v))
+                        if (TJSVM.VM.strClass.hasMemberFunc(name, out v))
                         {
-                            if(v.vt == VarType.FUNCTION)
+                            if (v.vt == VarType.FUNCTION)
                             {
                                 return new TJSVariable(new TJSFunction((TJSFunction)v.obj, null, new TJSVariable(str)));
                             }
@@ -729,7 +877,7 @@ namespace AVGParser.KRKR
         {
             if (name >= 0)
             {
-                if(name >= arr.arr.Count)
+                if (name >= arr.arr.Count)
                 {
                     if (name >= 100000)
                         throw new TJSException("array size exceed 100000");
@@ -751,18 +899,18 @@ namespace AVGParser.KRKR
 
         public override void SetField(string name, TJSVariable value)
         {
-            switch(name)
+            switch (name)
             {
                 case "length":
                     {
                         int l = value.ToInt();
                         if (l < 0)
                             throw new TJSException("length cannot < 0");
-                        if(l<arr.arr.Count)
+                        if (l < arr.arr.Count)
                         {
                             arr.arr.RemoveRange(l, arr.arr.Count - l);
                         }
-                        else if (l>arr.arr.Count)
+                        else if (l > arr.arr.Count)
                         {
                             arr.arr.AddRange(Enumerable.Repeat(new TJSVariable(VarType.VOID), l - arr.arr.Count));
                         }
@@ -915,20 +1063,20 @@ namespace AVGParser.KRKR
             int start = pos;
             bool haveE = false;
             bool haveDot = false;
-            while(pos < toParse[line].Length)
+            while (pos < toParse[line].Length)
             {
-                if(char.IsDigit(toParse[line][pos]))
+                if (char.IsDigit(toParse[line][pos]))
                 {
                     pos++;
                 }
-                else if(toParse[line][pos] == '.')
+                else if (toParse[line][pos] == '.')
                 {
                     if (haveDot)
                         break;
                     haveDot = true;
                     pos++;
                 }
-                else if(toParse[line][pos] == 'E' || toParse[line][pos]=='e')
+                else if (toParse[line][pos] == 'E' || toParse[line][pos] == 'e')
                 {
                     if (haveE)
                         break;
@@ -950,7 +1098,9 @@ namespace AVGParser.KRKR
         public TJSNode ReadToken()
         {
             TJSNode node = new TJSNode();
-            while(line < toParse.Length && pos>=toParse[line].Length)
+            while (pos < toParse[line].Length && char.IsWhiteSpace(toParse[line][pos]))
+                pos++;
+            while (line < toParse.Length && pos >= toParse[line].Length)
             {
                 line++;
                 pos = 0;
@@ -961,7 +1111,7 @@ namespace AVGParser.KRKR
             }
             node.line = line;
             node.pos = pos;
-            if(line >= toParse.Length)
+            if (line >= toParse.Length)
             {
                 node.op = Operator.OP_END;
                 return node;
@@ -1104,7 +1254,7 @@ namespace AVGParser.KRKR
                             pos += 2;
                             return node;
                         }
-                        else if(toParse[line][pos + 1] == '[')
+                        else if (toParse[line][pos + 1] == '[')
                         {
                             node.op = Operator.OP_DIC;
                             pos += 2;
@@ -1120,9 +1270,9 @@ namespace AVGParser.KRKR
                         if (toParse[line][pos + 1] == '*')
                         {
                             pos += 2;
-                            while(line < toParse.Length)
+                            while (line < toParse.Length)
                             {
-                                while(pos + 1 < toParse[line].Length)
+                                while (pos + 1 < toParse[line].Length)
                                 {
                                     if (toParse[line][pos] == '*' && toParse[line][pos + 1] == '/')
                                     {
@@ -1133,24 +1283,24 @@ namespace AVGParser.KRKR
                                 pos = 0;
                                 line++;
                             }
-                            if(pos>=toParse[line].Length)
+                            if (pos >= toParse[line].Length)
                             {
                                 pos = 0;
                                 line++;
                             }
                             return ReadToken();
                         }
-                        else if(toParse[line][pos + 1] == '/')
+                        else if (toParse[line][pos + 1] == '/')
                         {
                             line++;
                             pos = 0;
                             return ReadToken();
                         }
-                        else if(toParse[line][pos] == '=')
+                        else if (toParse[line][pos] == '=')
                         {
                             node.op = Operator.OP_SETDIV;
                             pos += 2;
-                            return node; 
+                            return node;
                         }
                     }
                     node.op = Operator.OP_DIV;
@@ -1177,9 +1327,9 @@ namespace AVGParser.KRKR
                     pos++;
                     return node;
                 case '>':
-                    if(pos + 1 < toParse[line].Length)
+                    if (pos + 1 < toParse[line].Length)
                     {
-                        if(toParse[line][pos + 1] == '>')
+                        if (toParse[line][pos + 1] == '>')
                         {
                             if (pos + 2 < toParse[line].Length && toParse[line][pos + 2] == '=')
                             {
@@ -1305,19 +1455,19 @@ namespace AVGParser.KRKR
                     pos++;
                     return node;
                 default:
-                    if(char.IsDigit(toParse[line][pos]))
+                    if (char.IsDigit(toParse[line][pos]))
                     {
                         node.variable = new TJSVariable(ParseNumber());
                         node.op = Operator.OP_CONST;
                         return node;
                     }
-                    else if(char.IsLetter(toParse[line][pos]) || toParse[line][pos]=='_' || toParse[line][pos]>127)
+                    else if (char.IsLetter(toParse[line][pos]) || toParse[line][pos] == '_' || toParse[line][pos] > 127)
                     {
                         int start = pos;
                         pos++;
-                        while(pos < toParse[line].Length)
+                        while (pos < toParse[line].Length)
                         {
-                            if(char.IsLetterOrDigit(toParse[line][pos]) || toParse[line][pos]=='_')
+                            if (char.IsLetterOrDigit(toParse[line][pos]) || toParse[line][pos] == '_')
                             {
                                 pos++;
                             }
@@ -1327,7 +1477,7 @@ namespace AVGParser.KRKR
                             }
                         }
                         string name = toParse[line].Substring(start, pos - start);
-                        if(!nextIsBareWord && operators.ContainsKey(name))
+                        if (!nextIsBareWord && operators.ContainsKey(name))
                         {
                             node.op = operators[name];
                             return node;
@@ -1339,14 +1489,14 @@ namespace AVGParser.KRKR
                             return node;
                         }
                     }
-                    else if(toParse[line][pos] == '"' || toParse[line][pos] == '\'')
+                    else if (toParse[line][pos] == '"' || toParse[line][pos] == '\'')
                     {
                         string str = "";
-                        pos++;
                         char startchar = toParse[line][pos];
+                        pos++;
                         while (pos < toParse[line].Length)
                         {
-                            if(toParse[line][pos] == '\\')
+                            if (toParse[line][pos] == '\\')
                             {
                                 if (pos + 1 >= toParse[line].Length)
                                 {
@@ -1354,7 +1504,7 @@ namespace AVGParser.KRKR
                                     e.AddTrace(line, pos - 1);
                                     throw e;
                                 }
-                                switch(toParse[line][pos + 1])
+                                switch (toParse[line][pos + 1])
                                 {
                                     case '\\':
                                         str += '\\';
@@ -1423,7 +1573,7 @@ namespace AVGParser.KRKR
                                 }
                                 pos += 2;
                             }
-                            else if(toParse[line][pos] == startchar)
+                            else if (toParse[line][pos] == startchar)
                             {
                                 break;
                             }
@@ -1466,7 +1616,7 @@ namespace AVGParser.KRKR
         internal int positiveStack;
         internal List<ILCode> codes = new List<ILCode>();
 
-        Dictionary<string, int> localvar;
+        // Dictionary<string, int> localvar;
 
         internal void AddCode(VMCode c, int p1, int p2, int p3, int l, int p)
         {
@@ -1492,15 +1642,26 @@ namespace AVGParser.KRKR
 
             public CompileClosure parent = null;
 
-            public int getPos(string name)
+            public CompileClosure upParent = null;
+
+            public int getPos(string name, out bool IsUpValue)
             {
-                if(varpos.ContainsKey(name))
+                IsUpValue = false;
+                if (varpos.ContainsKey(name))
                 {
                     return varpos[name];
                 }
-                if(parent != null)
+                if (parent != null)
                 {
-                    return parent.getPos(name);
+                    return parent.getPos(name, out IsUpValue);
+                }
+                if (upParent != null)
+                {
+                    int res = upParent.getPos(name, out IsUpValue);
+                    if (res < 0)
+                        IsUpValue = true;
+                    //upvalue is non-local variable
+                    return 0;
                 }
                 return 0;
             }
@@ -1532,7 +1693,16 @@ namespace AVGParser.KRKR
                 CompileClosure old = closure;
                 closure = new CompileClosure();
                 closure.parent = old;
-                closure.nextPos = old.nextPos;
+                if (old != null)
+                {
+                    closure.upParent = old.upParent;
+                    closure.nextPos = old.nextPos;
+                }
+                else
+                {
+                    closure.upParent = null;
+                    closure.nextPos = -1;
+                }
             }
 
             public void RemoveLastClosure()
@@ -1545,13 +1715,7 @@ namespace AVGParser.KRKR
 
         Stack<Compiler> compilers = new Stack<Compiler>();
 
-        Compiler compiler
-        {
-            get
-            {
-                return compilers.Peek();
-            }
-        }
+        Compiler compiler = null;
 
         TJSNode peekToken()
         {
@@ -1562,7 +1726,7 @@ namespace AVGParser.KRKR
 
         TJSNode readToken()
         {
-            if(cache.Count>0)
+            if (cache.Count > 0)
             {
                 var ret = cache[0];
                 cache.RemoveAt(0);
@@ -1657,11 +1821,11 @@ namespace AVGParser.KRKR
                 throw e;
             }
             var res = token;
-            switch(token.op)
+            switch (token.op)
             {
                 case Operator.OP_END:
                 case Operator.OP_SEMICOLON:
-                    if(!canBeNull)
+                    if (!canBeNull)
                     {
                         var e = new TJSException("unexpected sentence end");
                         e.AddTrace(next.line, next.pos);
@@ -1717,7 +1881,7 @@ namespace AVGParser.KRKR
                                 throw e;
                             }
                         }
-                        catch(TJSException e)
+                        catch (TJSException e)
                         {
                             compiler.RemoveLastClosure();
                             throw e;
@@ -1763,7 +1927,7 @@ namespace AVGParser.KRKR
                         }
                         catch (TJSException e)
                         {
-                            if(newcbclo != null)
+                            if (newcbclo != null)
                                 compiler.cbclo.Pop();
                             compiler.RemoveLastClosure();
                             throw e;
@@ -1782,7 +1946,7 @@ namespace AVGParser.KRKR
                         {
                             _parse(0, dest, true);
                         }
-                        catch(TJSException e)
+                        catch (TJSException e)
                         {
                             compiler.cbclo.Pop();
                             compiler.RemoveLastClosure();
@@ -1928,9 +2092,9 @@ namespace AVGParser.KRKR
                             compiler.cbclo.Pop();
                             compiler.RemoveLastClosure();
                         }
-                        catch(TJSException e)
+                        catch (TJSException e)
                         {
-                            if(newcbclo != null)
+                            if (newcbclo != null)
                                 compiler.cbclo.Pop();
                             compiler.RemoveLastClosure();
                             throw e;
@@ -1938,7 +2102,7 @@ namespace AVGParser.KRKR
                     }
                     return;
                 case Operator.OP_CONTINUE:
-                    if(compiler.cbclo.Count==0)
+                    if (compiler.cbclo.Count == 0)
                     {
                         var e = new TJSException("no context for continue");
                         e.AddTrace(token.line, token.pos);
@@ -1971,7 +2135,7 @@ namespace AVGParser.KRKR
                             }
                             varname = next.name;
                             compiler.ilcode.consts.Add(new TJSVariable(varname));
-                            if(compiler.closure != null)
+                            if (compiler.closure != null)
                             {
                                 varpos = compiler.closure.RegVar(varname);
                                 compiler.ilcode.AddCode(VMCode.VM_REGVAR, varpos, compiler.ilcode.consts.Count - 1, 0, token.line, token.pos);
@@ -2022,7 +2186,7 @@ namespace AVGParser.KRKR
                     }
                     return;
                 case Operator.OP_RETURN:
-                    if(next.op == Operator.OP_END || next.op == Operator.OP_SEMICOLON)
+                    if (next.op == Operator.OP_END || next.op == Operator.OP_SEMICOLON)
                     {
                         compiler.ilcode.AddCode(VMCode.VM_RETURNVOID, 0, 0, 0, token.line, token.pos);
                     }
@@ -2066,7 +2230,6 @@ namespace AVGParser.KRKR
                     {
                         while (next.op != Operator.OP_BRACE2)
                         {
-                            next = readToken();
                             if (next.op == Operator.OP_BRACE)
                             {
                                 _parse(0, dest, true);
@@ -2087,15 +2250,17 @@ namespace AVGParser.KRKR
                                 }
                                 else
                                 {
-                                    var e = new TJSException("invalid token");
+                                    var e = new TJSException("invalid token, should be ; or }");
                                     e.AddTrace(next.line, next.pos);
                                     throw e;
                                 }
                             }
                         }
                         compiler.RemoveLastClosure();
+                        if (peekToken().op == Operator.OP_SEMICOLON)
+                            next = readToken();
                     }
-                    catch(TJSException e)
+                    catch (TJSException e)
                     {
                         throw e;
                     }
@@ -2109,10 +2274,16 @@ namespace AVGParser.KRKR
                 case Operator.OP_FUNCTION:  //function name(param=exp,...)
                     {
                         string name = null;
-                        if(next.op == Operator.OP_LITERAL)
+                        if (next.op == Operator.OP_LITERAL)
                         {
                             name = next.name;
                             next = readToken();
+                        }
+                        else if (rbp < 5)
+                        {
+                            var e = new TJSException("defining a function must give a name");
+                            e.AddTrace(next.line, next.pos);
+                            throw e;
                         }
                         if (next.op != Operator.OP_PARENTHESES)
                         {
@@ -2122,8 +2293,10 @@ namespace AVGParser.KRKR
                         }
                         var newcp = new Compiler();
                         newcp.AddNewClosure();
+                        newcp.closure.upParent = compiler.closure;
                         int dest2 = dest + 1;
                         bool hasDefault = false;
+                        HashSet<string> varnames = new HashSet<string>();
                         try
                         {
                             next = readToken();
@@ -2137,7 +2310,16 @@ namespace AVGParser.KRKR
                                         e.AddTrace(next.line, next.pos);
                                         throw e;
                                     }
-                                    newcp.closure.RegVar(next.name);
+                                    if(varnames.Contains(next.name))
+                                    {
+                                        var e = new TJSException("duplicate parameter name");
+                                        e.AddTrace(next.line, next.pos);
+                                        throw e;
+                                    }
+                                    int target = newcp.closure.RegVar(next.name);
+                                    varnames.Add(next.name);
+                                    newcp.ilcode.AddCode(VMCode.VM_REGVAR, target, newcp.ilcode.consts.Count, 0, next.line, next.pos);
+                                    newcp.ilcode.consts.Add(new TJSVariable(next.name));
                                     next = readToken();
                                     if (next.op == Operator.OP_SET)
                                     {
@@ -2147,7 +2329,7 @@ namespace AVGParser.KRKR
                                     }
                                     else
                                     {
-                                        if(hasDefault)
+                                        if (hasDefault)
                                         {
                                             var e = new TJSException("default parameters must be placed last");
                                             e.AddTrace(next.line, next.pos);
@@ -2170,29 +2352,33 @@ namespace AVGParser.KRKR
                                 }
                             }
                             next = readToken();
-                            if(next.op != Operator.OP_BRACE)
+                            if (next.op != Operator.OP_BRACE)
                             {
                                 var e = new TJSException("need {");
                                 e.AddTrace(next.line, next.pos);
                                 throw e;
                             }
                         }
-                        catch(TJSException e)
+                        catch (TJSException e)
                         {
                             throw e;
                         }
                         try
                         {
                             compilers.Push(newcp);
+                            compiler = newcp;
                             _parse(0, 2);
                         }
                         catch (TJSException e)
                         {
                             compilers.Pop();
+                            compiler = compilers.Peek();
                             throw e;
                         }
+                        newcp.ilcode.nagetiveStack = newcp.closure.nextPos + 1;
                         var func = new TJSFunction(newcp.ilcode, null);
                         compilers.Pop();
+                        compiler = compilers.Peek();
                         compiler.ilcode.AddCode(VMCode.VM_LOADCONST, dest, compiler.ilcode.consts.Count, 0, token.line, token.pos);
                         compiler.ilcode.consts.Add(new TJSVariable(func));
                         compiler.ilcode.AddCode(VMCode.VM_MAKEFUNC, dest, dest + 1, dest2, token.line, token.pos);
@@ -2207,15 +2393,24 @@ namespace AVGParser.KRKR
                             else
                             {
                                 int pos = compiler.closure.RegVar(name);
+                                compiler.ilcode.AddCode(VMCode.VM_SETFUNCCLOSURE, dest, 0, 0, token.line, token.pos);
                                 compiler.ilcode.AddCode(VMCode.VM_COPY, pos, dest, 0, token.line, token.pos);
                             }
+                        }
+                        else if(compiler.closure != null)
+                        {
+                            compiler.ilcode.AddCode(VMCode.VM_SETFUNCCLOSURE, dest, 0, 0, token.line, token.pos);
+                        }
+                        if (rbp >= 5 && next.op == Operator.OP_BRACE2)
+                        {
+                            next = readToken();
                         }
                     }
                     break;
                 case Operator.OP_PARENTHESES:
-                    if(next.op == Operator.OP_INT || next.op == Operator.OP_REAL || next.op == Operator.OP_STRING)
+                    if (next.op == Operator.OP_INT || next.op == Operator.OP_REAL || next.op == Operator.OP_STRING)
                     {
-                        if(peekToken().op == Operator.OP_PARENTHESES2)
+                        if (peekToken().op == Operator.OP_PARENTHESES2)
                         {
                             readToken();
                             _parse(300, dest);
@@ -2223,7 +2418,7 @@ namespace AVGParser.KRKR
                         }
                     }
                     _parse(5, dest);
-                    if(next.op != Operator.OP_PARENTHESES2)
+                    if (next.op != Operator.OP_PARENTHESES2)
                     {
                         var e = new TJSException("need )");
                         e.AddTrace(next.line, next.pos);
@@ -2259,6 +2454,7 @@ namespace AVGParser.KRKR
                                 }
                             }
                         }
+                        next = readToken();
                         compiler.ilcode.AddCode(VMCode.VM_MAKEARRAY, dest, dest2, 0, token.line, token.pos);
                     }
                     break;
@@ -2303,6 +2499,7 @@ namespace AVGParser.KRKR
                                 throw e;
                             }
                         }
+                        next = readToken();
                         compiler.ilcode.AddCode(VMCode.VM_MAKEDIC, dest, dest2, 0, token.line, token.pos);
                     }
                     break;
@@ -2319,19 +2516,19 @@ namespace AVGParser.KRKR
                     {
                         _parse(LBP[(int)Operator.OP_INC], dest);
                         var c = compiler.ilcode.codes[compiler.ilcode.codes.Count - 1];
-                        if(c.code == VMCode.VM_COPY)
+                        if (c.code == VMCode.VM_COPY)
                         {
                             //local var
-                            if(token.op == Operator.OP_INC)
+                            if (token.op == Operator.OP_INC)
                                 compiler.ilcode.AddCode(VMCode.VM_INC, c.op1, c.op2, 0, token.line, token.pos);
                             else
                                 compiler.ilcode.AddCode(VMCode.VM_DEC, c.op1, c.op2, 0, token.line, token.pos);
                             compiler.ilcode.codes.RemoveAt(compiler.ilcode.codes.Count - 2);
                         }
-                        else if(c.code == VMCode.VM_DOT)
+                        else if (c.code == VMCode.VM_DOT)
                         {
                             //global var or member
-                            while(c.op1 == c.op2 || c.op1 == c.op3)
+                            while (c.op1 == c.op2 || c.op1 == c.op3)
                             {
                                 c.op1++;
                             }
@@ -2341,7 +2538,7 @@ namespace AVGParser.KRKR
                             else
                                 compiler.ilcode.AddCode(VMCode.VM_DEC, c.op1, c.op1, 0, token.line, token.pos);
                             compiler.ilcode.AddCode(VMCode.VM_DOTSET, c.op2, c.op3, c.op1, token.line, token.pos);
-                            if(c.op1 != dest)
+                            if (c.op1 != dest)
                             {
                                 compiler.ilcode.AddCode(VMCode.VM_COPY, dest, c.op1, 0, token.line, token.pos);
                             }
@@ -2365,15 +2562,18 @@ namespace AVGParser.KRKR
                 case Operator.OP_LITERAL:
                     {
                         int varpos = 0;
+                        bool isUpValue = false;
                         if (compiler.closure != null)
-                            varpos = compiler.closure.getPos(token.name);
-                        if(varpos<0)
+                            varpos = compiler.closure.getPos(token.name, out isUpValue);
+                        if (varpos < 0)
                         {
                             //local var
                             compiler.ilcode.AddCode(VMCode.VM_COPY, dest, varpos, 0, token.line, token.pos);
                         }
                         else
                         {
+                            if (isUpValue)
+                                compiler.ilcode.AddCode(VMCode.VM_REGUPVALUE, compiler.ilcode.consts.Count, 0, 0, token.line, token.pos);
                             compiler.ilcode.AddCode(VMCode.VM_LOADCONST, dest, compiler.ilcode.consts.Count, 0, token.line, token.pos);
                             compiler.ilcode.consts.Add(new TJSVariable(token.name));
                             compiler.ilcode.AddCode(VMCode.VM_DOT, dest, 0, dest, token.line, token.pos);
@@ -2397,7 +2597,7 @@ namespace AVGParser.KRKR
                     compiler.ilcode.AddCode(VMCode.VM_COPY, dest, 1, 0, token.line, token.pos);
                     break;
                 case Operator.OP_SUPER:
-                    if(next.op != Operator.OP_DOT && next.op!= Operator.OP_BRACKET)
+                    if (next.op != Operator.OP_DOT && next.op != Operator.OP_BRACKET)
                     {
                         var e = new TJSException("super cannot be used with . or [ to get member");
                         e.AddTrace(token.line, token.pos);
@@ -2405,7 +2605,7 @@ namespace AVGParser.KRKR
                     }
                     break;
                 case Operator.OP_TYPEOF:
-                    _parse(300, dest);
+                    _parse(LBP[(int)Operator.OP_BRACKET] - 5, dest);
                     compiler.ilcode.AddCode(VMCode.VM_TYPEOF, dest, dest, 0, token.line, token.pos);
                     break;
                 case Operator.OP_NEW:
@@ -2413,23 +2613,23 @@ namespace AVGParser.KRKR
                     compiler.ilcode.AddCode(VMCode.VM_NEW, dest, dest, 0, token.line, token.pos);
                     break;
                 case Operator.OP_CHAR:
-                    _parse(300, dest);
+                    _parse(LBP[(int)Operator.OP_BRACKET] - 5, dest);
                     compiler.ilcode.AddCode(VMCode.VM_CHAR, dest, dest, 0, token.line, token.pos);
                     break;
                 case Operator.OP_DOLLAR:
-                    _parse(300, dest);
+                    _parse(LBP[(int)Operator.OP_BRACKET] - 5, dest);
                     compiler.ilcode.AddCode(VMCode.VM_STR, dest, dest, 0, token.line, token.pos);
                     break;
                 case Operator.OP_INT:
-                    _parse(300, dest);
+                    _parse(LBP[(int)Operator.OP_BRACKET] - 5, dest);
                     compiler.ilcode.AddCode(VMCode.VM_TOINT, dest, dest, 0, token.line, token.pos);
                     break;
                 case Operator.OP_REAL:
-                    _parse(300, dest);
+                    _parse(LBP[(int)Operator.OP_BRACKET] - 5, dest);
                     compiler.ilcode.AddCode(VMCode.VM_TONUMBER, dest, dest, 0, token.line, token.pos);
                     break;
                 case Operator.OP_STRING:
-                    _parse(300, dest);
+                    _parse(LBP[(int)Operator.OP_BRACKET] - 5, dest);
                     compiler.ilcode.AddCode(VMCode.VM_TOSTRING, dest, dest, 0, token.line, token.pos);
                     break;
                 default:
@@ -2439,11 +2639,11 @@ namespace AVGParser.KRKR
                         throw e;
                     }
             }
-            while(LBP[(int)next.op] > rbp)
+            while (LBP[(int)next.op] > rbp)
             {
                 token = next;
                 next = readToken();
-                switch(token.op)
+                switch (token.op)
                 {
                     case Operator.OP_COMMA:
                         _parse(5, dest);
@@ -2467,7 +2667,7 @@ namespace AVGParser.KRKR
                             var op = token.op;
                             var cpos = compiler.ilcode.codes.Count - 1;
                             var c = compiler.ilcode.codes[cpos];
-                            if ( c.code != VMCode.VM_COPY && c.code != VMCode.VM_DOT)
+                            if (c.code != VMCode.VM_COPY && c.code != VMCode.VM_DOT)
                             {
                                 var e = new TJSException("operand must be variable");
                                 e.AddTrace(token.line, token.pos);
@@ -2508,7 +2708,7 @@ namespace AVGParser.KRKR
                                 {
                                     compiler.ilcode.AddCode(token.op - Operator.OP_SETBITAND + VMCode.VM_BITAND, c.op1, c.op1, c.op1 + 1, token.line, token.pos);
                                     compiler.ilcode.AddCode(VMCode.VM_DOTSET, c.op2, c.op3, c.op1, token.line, token.pos);
-                                    if (c.op1!= dest)
+                                    if (c.op1 != dest)
                                         compiler.ilcode.AddCode(VMCode.VM_COPY, dest, c.op1, 0, token.line, token.pos);
                                 }
                             }
@@ -2552,7 +2752,6 @@ namespace AVGParser.KRKR
                         compiler.ilcode.AddCode(VMCode.VM_INSTANCEOF, dest, dest, dest + 1, token.line, token.pos);
                         break;
                     case Operator.OP_PARENTHESES:
-                        //TODO
                         {
                             int dest2 = dest + 1;
                             if (next.op != Operator.OP_PARENTHESES2)
@@ -2580,6 +2779,7 @@ namespace AVGParser.KRKR
                                     }
                                 }
                             }
+                            next = readToken();
                             compiler.ilcode.AddCode(VMCode.VM_CALL, dest, dest + 1, dest2, token.line, token.pos);
                         }
                         break;
@@ -2595,7 +2795,7 @@ namespace AVGParser.KRKR
                         compiler.ilcode.AddCode(VMCode.VM_DOT, dest, dest, dest + 1, token.line, token.pos);
                         break;
                     case Operator.OP_DOT:
-                        if(next.op != Operator.OP_LITERAL)
+                        if (next.op != Operator.OP_LITERAL)
                         {
                             var e = new TJSException("need a variable name");
                             e.AddTrace(next.line, next.pos);
@@ -2654,20 +2854,21 @@ namespace AVGParser.KRKR
         public TJSIL Parse(string exp)
         {
             compilers.Clear();
-            compilers.Push(new Compiler());
+            compiler = new Compiler();
+            compilers.Push(compiler);
             cache.Clear();
             lexer.LoadScript(exp);
             next = readToken();
-            while(next.op != Operator.OP_END)
+            while (next.op != Operator.OP_END)
             {
                 _parse(0, 2, true);
-                if (next.op == Operator.OP_SEMICOLON)
+                if (next.op == Operator.OP_SEMICOLON || next.op == Operator.OP_BRACE2)
                     next = readToken();
             }
             if (compiler.closure == null)
                 compiler.ilcode.nagetiveStack = 0;
             else
-                compiler.ilcode.nagetiveStack = compiler.closure.nextPos;
+                compiler.ilcode.nagetiveStack = compiler.closure.nextPos + 1;
             return compiler.ilcode;
         }
     }
@@ -2861,7 +3062,7 @@ namespace AVGParser.KRKR
             }
         }
 
-        public VMVariable RunAsFunc()
+        public TJSVariable RunAsFunc()
         {
             throw new NotImplementedException();
         }
@@ -3017,7 +3218,7 @@ namespace AVGParser.KRKR
                     if (name.IsInt())
                         TJSVM.VM.strClass.SetField(name.ToInt(), value);
                     else
-                        TJSVM.VM.strClass.GetField(name.ToString());
+                        TJSVM.VM.strClass.SetField(name.ToString(), value);
                     break;
                 case VarType.ARRAY:
                     if (name.IsInt())
@@ -3046,12 +3247,108 @@ namespace AVGParser.KRKR
                     throw new TJSException("internal type error");
             }
         }
+
+        public void Remove(TJSVariable index)
+        {
+            switch (vt)
+            {
+                case VarType.VOID:
+                    throw new TJSException("cannot set member of void");
+                case VarType.NUMBER:
+                    if (index.IsInt())
+                        TJSVM.VM.numClass.RemoveField(index.ToInt());
+                    else
+                        TJSVM.VM.numClass.RemoveField(index.ToString());
+                    break;
+                case VarType.STRING:
+                    if (index.IsInt())
+                        TJSVM.VM.strClass.RemoveField(index.ToInt());
+                    else
+                        TJSVM.VM.strClass.RemoveField(index.ToString());
+                    break;
+                case VarType.ARRAY:
+                    if (index.IsInt())
+                        TJSVM.VM.arrClass.RemoveField(index.ToInt());
+                    else
+                        TJSVM.VM.arrClass.RemoveField(index.ToString());
+                    break;
+                case VarType.DICTIONARY:
+                    if (index.IsInt())
+                        TJSVM.VM.dicClass.RemoveField(index.ToInt());
+                    else
+                        TJSVM.VM.dicClass.RemoveField(index.ToString());
+                    break;
+                case VarType.FUNCTION:
+                    throw new TJSException("cannot get member of function");
+                case VarType.CLASS:
+                case VarType.CLOSURE:
+                    if (index.IsInt())
+                        obj.RemoveField(index.ToInt());
+                    else
+                        obj.RemoveField(index.ToString());
+                    break;
+                case VarType.UNDEFINED:
+                    throw new TJSException("cannot get member of undefined");
+                default:
+                    throw new TJSException("internal type error");
+            }
+        }
+
+        public string GetTypeString()
+        {
+            switch (vt)
+            {
+                case VarType.VOID:
+                    return "void";
+                case VarType.NUMBER:
+                    return "number";
+                case VarType.STRING:
+                    return "string";
+                case VarType.ARRAY:
+                case VarType.DICTIONARY:
+                case VarType.FUNCTION:
+                case VarType.CLASS:
+                case VarType.CLOSURE:
+                    return "object";
+                case VarType.UNDEFINED:
+                    return "undefined";
+                default:
+                    throw new TJSException("internal type error");
+            }
+        }
+
+        public bool IsInstanceOf(string name)
+        {
+            switch (vt)
+            {
+                case VarType.VOID:
+                    return false;
+                case VarType.NUMBER:
+                    return name == "number";
+                case VarType.STRING:
+                    return name == "string";
+                case VarType.ARRAY:
+                    return name == "array" || name == "object";
+                case VarType.DICTIONARY:
+                    return name == "dictionary" || name == "object";
+                case VarType.FUNCTION:
+                    return name == "function" || name == "object";
+                case VarType.CLASS:
+                    return ((TJSClass)obj).IsInctanceOf(name);
+                case VarType.CLOSURE:
+                    return name == "closure" || name == "object";
+                case VarType.UNDEFINED:
+                    return false;
+                default:
+                    throw new TJSException("internal type error");
+            }
+        }
     }
 
     /// <summary>
     /// Only a subset of TJS syntax
     /// </summary>
-    public class TJSVM : VMinterface
+    public class TJSVM
     {
         static TJSVM _VM = null;
 
@@ -3070,6 +3367,21 @@ namespace AVGParser.KRKR
             _global.SetField("string", new TJSVariable(strClass));
             _global.SetField("array", new TJSVariable(arrClass));
             _global.SetField("dictionary", new TJSVariable(dicClass));
+
+            _global.SetField("log", new TJSVariable(new TJSFunction(Log, new TJSVariable(VarType.VOID))));
+        }
+
+        private static TJSVariable Log(TJSVariable _this, TJSVariable[] param, int start, int length)
+        {
+            string str = "";
+            for (int i = 0; i < length; i++)
+            {
+                if (i != 0)
+                    str += ',';
+                str += param[i + start].ToString();
+            }
+            UnityEngine.Debug.Log(str);
+            return new TJSVariable(VarType.VOID);
         }
 
         public static TJSVM VM
@@ -3082,14 +3394,21 @@ namespace AVGParser.KRKR
             }
         }
 
-        internal TJSVariable Run(TJSIL code, TJSClosure closure, TJSVariable _this, List<TJSVariable> defaultParam = null)
+        internal TJSVariable Run(TJSIL code, TJSClosure closure, TJSVariable _this, TJSVariable[] param = null)
         {
             var stackclosure = new TJSStackClosure(closure);
             var neg = -code.nagetiveStack;
-            stackclosure.localStack = new List<TJSVariable>(Enumerable.Repeat(new TJSVariable(), code.positiveStack + neg));
+            stackclosure.localStack = new TJSVariable[code.positiveStack + neg];
             var stack = stackclosure.localStack;
             stack[0 + neg] = new TJSVariable(stackclosure);
             stack[1 + neg] = _this;
+            if (param != null)
+            {
+                for (int i = 0; i < param.Length; i++)
+                {
+                    stack[neg - i - 1] = param[i];
+                }
+            }
             int start = 0;
             while (start < code.codes.Count)
             {
@@ -3115,7 +3434,10 @@ namespace AVGParser.KRKR
                             start++;
                             break;
                         case VMCode.VM_ADD:
-                            stack[c.op1 + neg] = new TJSVariable(stack[c.op2 + neg].ToDouble() + stack[c.op3 + neg].ToDouble());
+                            if (stack[c.op2 + neg].IsString())
+                                stack[c.op1 + neg] = new TJSVariable(stack[c.op2 + neg].ToString() + stack[c.op3 + neg].ToString());
+                            else
+                                stack[c.op1 + neg] = new TJSVariable(stack[c.op2 + neg].ToDouble() + stack[c.op3 + neg].ToDouble());
                             start++;
                             break;
                         case VMCode.VM_MOD:
@@ -3223,6 +3545,15 @@ namespace AVGParser.KRKR
                             start++;
                             break;
                         case VMCode.VM_CALL:
+                            {
+                                if (stack[c.op1 + neg].vt != VarType.FUNCTION)
+                                {
+                                    throw new TJSException("the object be called must be a function");
+                                }
+                                var func = (TJSFunction)stack[c.op1 + neg].obj;
+                                stack[c.op1 + neg] = func.CallAsFunc(stack, c.op2 + neg, c.op3 - c.op2);
+                            }
+                            start++;
                             break;
                         case VMCode.VM_JUMP:
                             start = c.op1;
@@ -3272,34 +3603,107 @@ namespace AVGParser.KRKR
                         case VMCode.VM_POSTINC:
                             stack[c.op1 + neg] = stack[c.op2 + neg];
                             stack[c.op2 + neg] = new TJSVariable(stack[c.op2 + neg].ToInt() + 1);
+                            start++;
                             break;
                         case VMCode.VM_POSTDEC:
                             stack[c.op1 + neg] = stack[c.op2 + neg];
                             stack[c.op2 + neg] = new TJSVariable(stack[c.op2 + neg].ToInt() - 1);
+                            start++;
                             break;
                         case VMCode.VM_CHAR:
+                            stack[c.op1 + neg] = new TJSVariable(stack[c.op2 + neg].ToString()[0]);
+                            start++;
                             break;
                         case VMCode.VM_STR:
+                            {
+                                int ch = stack[c.op2 + neg].ToInt();
+                                string str = "";
+                                str += char.ConvertFromUtf32(ch);
+                                stack[c.op1 + neg] = new TJSVariable(str);
+                            }
+                            start++;
                             break;
                         case VMCode.VM_MAKEARRAY:
+                            {
+                                //set capacity a little bit more than actual size
+                                List<TJSVariable> v = new List<TJSVariable>(c.op2 - c.op1 + 5);
+                                for (int s = c.op1 + neg; s < c.op2 + neg; s++)
+                                {
+                                    v.Add(stack[s]);
+                                }
+                                stack[c.op1] = new TJSVariable(v);
+                            }
+                            start++;
                             break;
                         case VMCode.VM_MAKEDIC:
+                            {
+                                Dictionary<string, TJSVariable> dic = new Dictionary<string, TJSVariable>();
+                                for (int s = c.op1 + neg; s < c.op2 + neg; s += 2)
+                                {
+                                    dic[stack[s].ToString()] = stack[s + 1];
+                                }
+                                stack[c.op1] = new TJSVariable(dic);
+                            }
+                            start++;
                             break;
                         case VMCode.VM_MAKEFUNC:
+                            {
+                                var func = new TJSFunction((TJSFunction)stack[c.op1 + neg].obj);
+                                if(c.op3 > c.op2)
+                                    func.defaultParam = new TJSVariable[c.op3 - c.op2];
+                                else
+                                    func.defaultParam = null;
+                                for (int i = 0; i < c.op3 - c.op2; i++)
+                                {
+                                    func.defaultParam[i] = stack[c.op2 + neg + i];
+                                }
+                                func.closure = VM._global;
+                                stack[c.op1 + neg] = new TJSVariable(func);
+                            }
+                            start++;
+                            break;
+                        case VMCode.VM_SETFUNCCLOSURE:
+                            {
+                                var func = (TJSFunction)stack[c.op1 + neg].obj;
+                                func.closure = (TJSStackClosure)stack[0 + neg].obj;
+                            }
+                            start++;
                             break;
                         case VMCode.VM_NEW:
+                            //TODO
                             break;
                         case VMCode.VM_TYPEOF:
+                            stack[c.op1 + neg] = new TJSVariable(stack[c.op2 + neg].GetTypeString());
+                            start++;
                             break;
                         case VMCode.VM_DELETE:
+                            stack[c.op1 + neg].Remove(stack[c.op2 + neg]);
+                            stack[c.op1 + neg] = new TJSVariable(VarType.VOID);
+                            start++;
                             break;
                         case VMCode.VM_INSTANCEOF:
+                            stack[c.op1 + neg] = new TJSVariable(stack[c.op2 + neg].IsInstanceOf(stack[c.op3].ToString()));
+                            start++;
                             break;
                         case VMCode.VM_GLOBAL:
+                            stack[c.op1 + neg] = new TJSVariable(VM._global);
+                            start++;
                             break;
                         case VMCode.VM_SUPERDOT:
+                            //TODO
                             break;
                         case VMCode.VM_REGVAR:
+                            {
+                                var clo = (TJSStackClosure)stack[0 + neg].obj;
+                                if (clo.localvar == null)
+                                    clo.localvar = new Dictionary<string, int>();
+                                clo.localvar[code.consts[c.op2].ToString()] = c.op1 + neg;
+                            }
+                            start++;
+                            break;
+                        case VMCode.VM_REGUPVALUE:
+                            ((TJSStackClosure)stack[0 + neg].obj).RegUpValue(code.consts[c.op1].ToString());
+                            start++;
                             break;
                         case VMCode.VM_NULL:
                             start++;
@@ -3318,101 +3722,83 @@ namespace AVGParser.KRKR
             return stack[2 + neg];
         }
 
-        public VMVariable Eval(string exp)
+        public TJSVariable Eval(string exp)
         {
             TJSIL code = parser.Parse(exp);
-            return new TJSVariableInterface(Run(code, _global, new TJSVariable(VarType.VOID), null));
+            return Run(code, _global, new TJSVariable(VarType.VOID), null);
         }
 
-        public VMVariable EvalInClosure(string exp, TJSClosure closure)
+        public TJSVariable EvalInClosure(string exp, TJSClosure closure)
         {
             TJSIL code = parser.Parse(exp);
-            return new TJSVariableInterface(Run(code, closure, new TJSVariable(VarType.VOID), null));
+            return Run(code, closure, new TJSVariable(VarType.VOID), null);
         }
     }
 
-    class TJSVariableInterface: VMVariable
+    class TJSClass4CSharp : TJSClass
     {
-        public TJSVariable tjsvar;
+        Dictionary<string, TJSVariable> methods = new Dictionary<string, TJSVariable>();
 
-        public TJSVariableInterface(TJSVariable v)
+        public TJSClass4CSharp(Type classType, bool hasInstance)
         {
-            tjsvar = v;
+            var methods = classType.GetMethods(BindingFlags.Public | BindingFlags.Static);
+            for (int i = 0; i < methods.Length; i++)
+            {
+                if (makeStaticFunc(methods[i], out TJSVariable v))
+                {
+                    this.methods[methods[i].Name] = v;
+                }
+            }
         }
 
-        public bool IsArray()
+        public override TJSVariable GetField(string name)
         {
-            return tjsvar.IsArray();
+            if (methods.ContainsKey(name))
+            {
+                return methods[name];
+            }
+            throw new TJSException($"member {name} not exist");
         }
 
-        public bool IsBoolean()
+        public override void SetField(string name, TJSVariable value)
         {
-            return tjsvar.IsBoolean();
+            base.SetField(name, value);
         }
 
-        public bool IsClass()
+        bool makeStaticFunc(MethodInfo m, out TJSVariable func)
         {
-            return tjsvar.IsClass();
-        }
-
-        public bool IsDic()
-        {
-            return tjsvar.IsDic();
-        }
-
-        public bool IsDouble()
-        {
-            return tjsvar.IsDouble();
-        }
-
-        public bool IsInt()
-        {
-            return tjsvar.IsInt();
-        }
-
-        public bool IsString()
-        {
-            return tjsvar.IsString();
-        }
-
-        public bool IsVoid()
-        {
-            return tjsvar.IsVoid();
-        }
-
-        public VMVariable RunAsFunc()
-        {
-            throw new NotImplementedException();
-        }
-
-        public List<VMVariable> ToArray()
-        {
-            throw new NotImplementedException();
-        }
-
-        public bool ToBoolean()
-        {
-            return tjsvar.ToBoolean();
-        }
-
-        public Dictionary<string, VMVariable> ToDic()
-        {
-            throw new NotImplementedException();
-        }
-
-        public override string ToString()
-        {
-            return tjsvar.ToString();
-        }
-
-        public double ToDouble()
-        {
-            return tjsvar.ToDouble();
-        }
-
-        public int ToInt()
-        {
-            return tjsvar.ToInt();
+            var p = m.GetParameters();
+            var r = m.ReturnType;
+            if (p.Length == 0)
+            {
+                func = new TJSVariable(new TJSFunction((TJSVariable _this, TJSVariable[] param, int start, int length) =>
+                {
+                    var ret = m.Invoke(null, null);
+                    if (r == null || r == typeof(void) || ret == null)
+                    {
+                        return new TJSVariable(VarType.VOID);
+                    }
+                    if (r == typeof(int))
+                    {
+                        return new TJSVariable((int)ret);
+                    }
+                    else if (r == typeof(float))
+                    {
+                        return new TJSVariable((float)ret);
+                    }
+                    else if (r == typeof(double))
+                    {
+                        return new TJSVariable((double)ret);
+                    }
+                    else if (r == typeof(string))
+                    {
+                        return new TJSVariable((string)ret);
+                    }
+                    return new TJSVariable(VarType.VOID);
+                }, new TJSVariable(this)));
+            }
+            func = new TJSVariable();   //unuse
+            return false;
         }
     }
 }

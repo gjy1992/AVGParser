@@ -89,7 +89,7 @@ namespace AVGParser.KRKR
         /// <summary>
         /// VM used for eval exp
         /// </summary>
-        public VMinterface VM = TJSVM.VM;
+        public TJSVM VM = TJSVM.VM;
 
         public string ErrorMessage { get; internal set; }
 
@@ -471,7 +471,7 @@ namespace AVGParser.KRKR
                                 {
                                     try
                                     {
-                                        VMVariable res = VM.Eval(value.Substring(1));
+                                        TJSVariable res = VM.Eval(value.Substring(1));
                                         value = res.ToString();
                                     }
                                     catch (Exception e)
@@ -594,7 +594,7 @@ namespace AVGParser.KRKR
                             {
                                 try
                                 {
-                                    VMVariable r = VM.Eval(exp);
+                                    TJSVariable r = VM.Eval(exp);
                                     res = r.ToBoolean();
                                 }
                                 catch(Exception e)
@@ -672,7 +672,7 @@ namespace AVGParser.KRKR
                 {
                     try
                     {
-                        VMVariable r = VM.Eval(exp);
+                        TJSVariable r = VM.Eval(exp);
                         string res = r.ToString();
                         MacroBuffer buf = new MacroBuffer();
                         buf.MacroString = res;
@@ -720,7 +720,7 @@ namespace AVGParser.KRKR
                 {
                     try
                     {
-                        VMVariable r = VM.Eval(exp);
+                        TJSVariable r = VM.Eval(exp);
                         res = r.ToBoolean();
                     }
                     catch(Exception e)
@@ -846,6 +846,7 @@ namespace AVGParser.KRKR
                     {
                         error("[iscript] need [endscript]");
                     }
+                    proceedOffset(text.Length);
                     text = text.TrimStart();
                     if (text.StartsWith("[endscript]"))
                         break;
@@ -1007,6 +1008,9 @@ namespace AVGParser.KRKR
         {
             ErrorMessage = $"Error:{msg} at {CurrentScript}, line {CurrentLineNumber}, when parse {getCurLine()}";
             UnityEngine.Debug.LogError(ErrorMessage);
+            //skip to next line
+            currentCall.LineNumber++;
+            currentCall.LineOffset = 0;
         }
     }
 }
