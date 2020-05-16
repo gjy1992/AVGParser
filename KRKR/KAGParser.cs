@@ -24,7 +24,9 @@ namespace AVGParser.KRKR
     {
         public string MacroString { get; internal set; } = "";
         public int Offset { get; internal set; }
+        public int PrevOffset { get; internal set; }
         public Dictionary<string, string> MacroParams { get; internal set; } = new Dictionary<string, string>();
+        public Dictionary<string, TJSVariable> cacheTJSDic { get; internal set; } = null;
     }
 
     public class CallStackInfo
@@ -33,6 +35,8 @@ namespace AVGParser.KRKR
         public string LabelName { get; internal set; } = null;
         public int LineNumber { get; internal set; }
         public int LineOffset { get; internal set; }
+        public int PrevLineNumber { get; internal set; }
+        public int PrevLineOffset { get; internal set; }
         public List<MacroBuffer> buffer { get; internal set; } = new List<MacroBuffer>();
     }
 
@@ -46,9 +50,9 @@ namespace AVGParser.KRKR
     [Serializable]
     public class SaveState
     {
-        public int TrueIfDepth { get; internal set; } = 0;
-        public int PassedIfDepth { get; internal set; } = 0;
-        public int AllIfDepth { get; internal set; } = 0;
+        public int TrueIfDepth { get; internal set; } = 0;      //count of @if blocks which current branch is active
+        public int PassedIfDepth { get; internal set; } = 0;    //count of @if blocks which one branch of it has been entered
+        public int AllIfDepth { get; internal set; } = 0;   //count of @if blocks
         public Stack<IfState> IfState { get; internal set; } = new Stack<IfState>();
         public List<CallStackInfo> CallStack { get; internal set; } = new List<CallStackInfo>();
 
@@ -85,6 +89,11 @@ namespace AVGParser.KRKR
 
         /// <summary>prohibit auto savepoint at savable label, such as in menu script</summary>
         public bool NoSaveGlobal = false;
+
+        /// <summary>
+        /// whether parse all continuous texts as one command, default is false (same as kag)
+        /// </summary>
+        public bool ParseTextTogether = false;
 
         /// <summary>
         /// VM used for eval exp
@@ -126,6 +135,17 @@ namespace AVGParser.KRKR
             }
         }
 
+        public int PrevLineNumber
+        {
+            get
+            {
+                int cc = currentSave.CallStack.Count;
+                if (cc <= 0)
+                    return -1;
+                return currentSave.CallStack[cc - 1].PrevLineNumber;
+            }
+        }
+
         public int CurrentLineOffset
         {
             get
@@ -134,6 +154,17 @@ namespace AVGParser.KRKR
                 if (cc <= 0)
                     return -1;
                 return currentSave.CallStack[cc - 1].LineOffset;
+            }
+        }
+
+        public int PrevLineOffset
+        {
+            get
+            {
+                int cc = currentSave.CallStack.Count;
+                if (cc <= 0)
+                    return -1;
+                return currentSave.CallStack[cc - 1].PrevLineOffset;
             }
         }
 
@@ -169,6 +200,7 @@ namespace AVGParser.KRKR
 
         ScriptCache currentScriptCache = null;
 
+        //current macro when parse macro command
         MacroInfo currentMacro = null;
         bool currentMacroValid = false;
         
@@ -183,6 +215,18 @@ namespace AVGParser.KRKR
             }
         }
 
+        //current macro context
+        MacroBuffer currentRunMacro
+        {
+            get
+            {
+                var macrobuf = currentCall?.buffer;
+                if (macrobuf == null || macrobuf.Count == 0)
+                    return null;
+                return macrobuf[macrobuf.Count - 1];
+            }
+        }
+
         bool currentIf
         {
             get
@@ -193,6 +237,29 @@ namespace AVGParser.KRKR
 
         bool isLineHead = true;
 
+        public TJSVariable MP(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            var macrobuf = currentRunMacro;
+            if (macrobuf.cacheTJSDic == null)
+            {
+                var dic = macrobuf.MacroParams;
+                var tjsdic = new Dictionary<string, TJSVariable>();
+                foreach (var it in dic)
+                {
+                    tjsdic[it.Key] = new TJSVariable(it.Value);
+                }
+                macrobuf.cacheTJSDic = tjsdic;
+            }
+            return new TJSVariable(new TJSDictionary(macrobuf.cacheTJSDic));
+        }
+
+        public KAGParser()
+        {
+            //register mp property
+            VM._global.RemoveField("mp");
+            VM._global.SetField("mp", new TJSVariable(new TJSProperty(MP, null, new TJSVariable())));
+        }
+
         /// <summary>
         /// recover KAGParser state from savedata
         /// </summary>
@@ -201,6 +268,19 @@ namespace AVGParser.KRKR
         {
             lastSave = state.clone();
             currentSave = state.clone();
+        }
+
+        /// <summary>
+        /// Manual set the content of a script
+        /// </summary>
+        /// <param name="scriptName"></param>
+        /// <param name="content"></param>
+        public void SetScriptContent(string scriptName, string content)
+        {
+            scriptCache[scriptName] = new ScriptCache();
+            content = content.Replace("\r\n", "\n");
+            content = content.Replace("\r", "\n");
+            scriptCache[scriptName].lines = content.Split('\n');
         }
 
         /// <summary>
@@ -467,17 +547,49 @@ namespace AVGParser.KRKR
                             }
                             else if (value.StartsWith("&"))
                             {
-                                if(currentIf)
+                                value = value.Substring(1);
+                                if (value.StartsWith("\"") && value.EndsWith("\"") && value.Length > 1)
+                                {
+                                    value = value.Substring(1, value.Length - 2);
+                                }
+                                if (currentIf)
                                 {
                                     try
                                     {
-                                        TJSVariable res = VM.Eval(value.Substring(1));
+                                        TJSVariable res = VM.Eval(value);
                                         value = res.ToString();
                                     }
                                     catch (Exception e)
                                     {
                                         error(e.Message);
                                         return null;
+                                    }
+                                }
+                            }
+                            else if(value.StartsWith("%"))
+                            {
+                                if(currentRunMacro == null)
+                                {
+                                    error("cannot use %variable in non-macro context");
+                                    return null;
+                                }
+                                var valuelist = value.Split(new char[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
+                                var dic = currentRunMacro?.MacroParams;
+                                value = "";
+                                foreach(var item in valuelist)
+                                {
+                                    if(item.StartsWith("%"))
+                                    {
+                                        if(dic.ContainsKey(item.Substring(1)))
+                                        {
+                                            value = item.Substring(1);
+                                            break;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        value = item;
+                                        break;
                                     }
                                 }
                             }
@@ -521,8 +633,30 @@ namespace AVGParser.KRKR
                         cmd.LineNumber = CurrentLineNumber;
                         cmd.LabelName = CurrentLabel;
                         cmd.CommandName = "text";
-                        cmd.CommandParams["text"] = text.Substring(0, 1);
-                        proceedOffset(1);
+                        if (ParseTextTogether && text.Length > 1)
+                        {
+                            int end = 0;
+                            int ch = text[end];
+                            int ch2 = text[end + 1];
+                            while(ch != '[' && !(ch == '/' && ch2 == '/'))
+                            {
+                                end++;
+                                if (end >= text.Length)
+                                    break;
+                                ch = ch2;
+                                if (end + 1 < text.Length)
+                                    ch2 = text[end + 1];
+                                else
+                                    ch2 = 0;
+                            }
+                            cmd.CommandParams["text"] = text.Substring(0, end);
+                            proceedOffset(end);
+                        }
+                        else
+                        {
+                            cmd.CommandParams["text"] = text.Substring(0, 1);
+                            proceedOffset(1);
+                        }
                         return cmd;
                     }
                     else
@@ -549,6 +683,8 @@ namespace AVGParser.KRKR
                 {
                     if (currentMacroValid)
                     {
+                        //manual pop macro stack
+                        currentMacro.MacroLine += "\n[macropop]";
                         macros[currentMacro.MacroName] = currentMacro;
                     }
                     currentMacro = null;
@@ -609,7 +745,7 @@ namespace AVGParser.KRKR
                                 currentSave.PassedIfDepth++;
                             }
                             currentSave.IfState.Pop();
-                            currentSave.IfState.Push(IfState.Else);
+                            currentSave.IfState.Push(IfState.ElseIf);
                         }
                     }
                 }
@@ -836,6 +972,17 @@ namespace AVGParser.KRKR
                 }
                 macros.Remove(name);
             }
+            else if (cmd.CommandName == "macropop")
+            {
+                if (currentCall.buffer.Count > 0)
+                {
+                    currentCall.buffer.RemoveAt(currentCall.buffer.Count - 1);
+                }
+                else
+                {
+                    error("meet macropop but not in a macro context, DO NOT write this command manually");
+                }
+            }
             else if (cmd.CommandName == "iscript")
             {
                 string exp = "";
@@ -902,6 +1049,24 @@ namespace AVGParser.KRKR
                 return null;
         }
 
+        public string GetPrevLine()
+        {
+            if (currentCall.buffer.Count > 0)
+            {
+                var c = currentCall.buffer[currentCall.buffer.Count - 1];
+                var str = c.MacroString.Substring(c.PrevOffset);
+                var npos = str.IndexOf('\n');
+                if (npos >= 0)
+                    return str.Substring(0, npos);
+                else
+                    return str;
+            }
+            if (currentCall.PrevLineNumber < currentScriptCache.lines.Length)
+                return currentScriptCache.lines[currentCall.PrevLineNumber].Substring(currentCall.PrevLineOffset);
+            else
+                return null;
+        }
+
         int skipToChar(string text, string end, int start = 0)
         {
             int i = start;
@@ -940,16 +1105,22 @@ namespace AVGParser.KRKR
             if (currentCall.buffer.Count > 0)
             {
                 var c = currentCall.buffer[currentCall.buffer.Count - 1];
+                c.PrevOffset = c.Offset;
                 c.Offset += n;
                 while (c.Offset < c.MacroString.Length && c.MacroString[c.Offset] == '\n')
                     c.Offset++;
-                if (c.Offset >= c.MacroString.Length)
+                while (c.Offset >= c.MacroString.Length)
                 {
                     currentCall.buffer.Remove(c);
+                    if (currentCall.buffer.Count == 0)
+                        return;
+                    c = currentCall.buffer[currentCall.buffer.Count - 1];
                 }
                 return;
             }
             var curline = currentScriptCache.lines[currentCall.LineNumber];
+            currentCall.PrevLineOffset = currentCall.LineOffset;
+            currentCall.PrevLineNumber = currentCall.LineNumber;
             currentCall.LineOffset += n;
             if (currentCall.LineOffset >= curline.Length)
             {
@@ -1006,7 +1177,7 @@ namespace AVGParser.KRKR
 
         void error(string msg)
         {
-            ErrorMessage = $"Error:{msg} at {CurrentScript}, line {CurrentLineNumber}, when parse {getCurLine()}";
+            ErrorMessage = $"Error:{msg} at {CurrentScript}, line {PrevLineNumber}, when parse {GetPrevLine()}";
             UnityEngine.Debug.LogError(ErrorMessage);
             //skip to next line
             currentCall.LineNumber++;
