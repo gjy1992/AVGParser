@@ -713,7 +713,6 @@ namespace AVGParser.KRKR
             throw new TJSException("invalid index");
         }
     }
-
     public class TJSDictionary : TJSObject
     {
         internal Dictionary<string, TJSVariable> dic;
@@ -766,17 +765,49 @@ namespace AVGParser.KRKR
     {
         internal List<TJSClass> parentClass;
 
+        internal TJSClass defineClass = null;
+
         internal bool isInstance = false;
 
         internal string name;
 
-        internal Dictionary<string, TJSVariable> defindeVars = new Dictionary<string, TJSVariable>();
+        internal Dictionary<string, TJSVariable> defineVars = new Dictionary<string, TJSVariable>();
 
         internal Dictionary<string, TJSVariable> members = new Dictionary<string, TJSVariable>();
+
+        public bool canInstantiate = false;
 
         public TJSClass() : base(null)
         {
 
+        }
+        public TJSClass(TJSClass def) : base(null)
+        {
+            defineClass = def;
+            isInstance = true;
+            foreach(var kv in def.defineVars)
+            {
+                members.Add(kv.Key, kv.Value);
+            }
+            canInstantiate = def.canInstantiate;
+            name = def.name;
+        }
+
+        public virtual TJSVariable CreateInstance(TJSVariable[] param, int start, int length)
+        {
+            if(!canInstantiate)
+            {
+                throw new TJSException("该类<" + name + ">不能实例化");
+            }
+            if (isInstance)
+                return new TJSVariable(new TJSClass(defineClass));
+            else
+                return new TJSVariable(new TJSClass(this));
+        }
+
+        public override TJSVariable CallAsFunc(TJSVariable[] param, int start, int length)
+        {
+            return CreateInstance(param, start, length);
         }
 
         public bool IsInctanceOf(string name)
@@ -796,7 +827,7 @@ namespace AVGParser.KRKR
             return VarType.CLASS;
         }
 
-        public bool hasMemberFunc(string name, out TJSVariable v)
+        internal bool hasMemberFunc(string name, out TJSVariable v)
         {
             if (members.ContainsKey(name))
             {
@@ -832,6 +863,23 @@ namespace AVGParser.KRKR
                     return prop.GetValue();
                 }
                 return v;
+            }
+            else if(defineClass != null)
+            {
+                if (defineClass.hasMemberFunc(name, out v))
+                {
+                    if (v.vt == VarType.FUNCTION)
+                    {
+                        v = new TJSVariable(new TJSFunction((TJSFunction)v.obj, this, new TJSVariable(this)));
+                        return v;
+                    }
+                    else if (v.vt == VarType.PROPERTY)
+                    {
+                        var prop = new TJSProperty((TJSProperty)v.obj, this, new TJSVariable(this));
+                        return prop.GetValue();
+                    }
+                    return v;
+                }
             }
             else if (parentClass != null)
             {
@@ -878,7 +926,7 @@ namespace AVGParser.KRKR
 
         public override bool hasMember(string name)
         {
-            return hasMemberFunc(name, out TJSVariable v);
+            return hasMemberFunc(name, out _);
         }
 
         public override void RemoveField(int name)
@@ -2810,8 +2858,18 @@ namespace AVGParser.KRKR
                     compiler.ilcode.AddCode(VMCode.VM_TYPEOF, dest, dest, 0, token.line, token.pos);
                     break;
                 case Operator.OP_NEW:
-                    _parse(300, dest);
-                    compiler.ilcode.AddCode(VMCode.VM_NEW, dest, dest, 0, token.line, token.pos);
+                    if (next.op == Operator.OP_LITERAL)
+                    {
+                        string name = next.name;
+                        _parse(300, dest);
+                        compiler.ilcode.AddCode(VMCode.VM_NEW, dest, dest, compiler.ilcode.consts.Count, token.line, token.pos);
+                        compiler.ilcode.consts.Add(new TJSVariable(name));
+                    }
+                    else
+                    {
+                        _parse(300, dest);
+                        compiler.ilcode.AddCode(VMCode.VM_NEW, dest, dest, -1, token.line, token.pos);
+                    }
                     break;
                 case Operator.OP_CHAR:
                     _parse(LBP[(int)Operator.OP_BRACKET] - 5, dest);
@@ -3238,6 +3296,72 @@ namespace AVGParser.KRKR
                 return false;
         }
 
+        public bool GreaterThan(TJSVariable v)
+        {
+            if (vt == VarType.VOID)
+                return false;
+            if(vt == VarType.NUMBER)
+            {
+                if (v.vt == VarType.VOID)
+                    return true;
+                if (v.vt == VarType.NUMBER)
+                    return num > v.num;
+                if (v.vt == VarType.STRING)
+                    return string.Compare(ToString(), v.str) > 0;
+                return false;
+            }
+            if (vt == VarType.STRING)
+            {
+                if (v.vt == VarType.VOID)
+                    return true;
+                if (v.vt == VarType.NUMBER)
+                    return string.Compare(str, v.ToString()) > 0;
+                if (v.vt == VarType.STRING)
+                    return string.Compare(str, v.str) > 0;
+                return false;
+            }
+            return false;
+        }
+
+        public bool GreaterOrEqual(TJSVariable v)
+        {
+            if (vt == VarType.VOID)
+                return v.vt == VarType.VOID;
+            if (vt == VarType.NUMBER)
+            {
+                if (v.vt == VarType.VOID)
+                    return true;
+                if (v.vt == VarType.NUMBER)
+                    return num >= v.num;
+                if (v.vt == VarType.STRING)
+                    return string.Compare(ToString(), v.str) >= 0;
+                return false;
+            }
+            if (vt == VarType.STRING)
+            {
+                if (v.vt == VarType.VOID)
+                    return true;
+                if (v.vt == VarType.NUMBER)
+                    return string.Compare(str, v.ToString()) >= 0;
+                if (v.vt == VarType.STRING)
+                    return string.Compare(str, v.str) >= 0;
+                return false;
+            }
+            return StrictEqual(v);
+        }
+
+        public static bool operator ==(TJSVariable a, TJSVariable b) => a.Equal(b);
+
+        public static bool operator !=(TJSVariable a, TJSVariable b) => !a.Equal(b);
+
+        public static bool operator >(TJSVariable a, TJSVariable b) => a.GreaterThan(b);
+
+        public static bool operator <(TJSVariable a, TJSVariable b) => !a.GreaterThan(b);
+
+        public static bool operator >=(TJSVariable a, TJSVariable b) => a.GreaterOrEqual(b);
+
+        public static bool operator <=(TJSVariable a, TJSVariable b) => !a.GreaterOrEqual(b);
+
         public bool StrictEqual(TJSVariable v)
         {
             if (vt != v.vt)
@@ -3359,6 +3483,57 @@ namespace AVGParser.KRKR
                     return "";
                 default:
                     return obj.ConvertToString();
+            }
+        }
+
+        public TJSVariable Clone()
+        {
+            if (vt == VarType.ARRAY)
+            {
+                var a = new List<TJSVariable>();
+                a.AddRange(((TJSArray)obj).arr);
+                return new TJSVariable(new TJSArray(a));
+            }
+            else if (vt == VarType.DICTIONARY)
+            {
+                var d = new Dictionary<string, TJSVariable>();
+                TJSDictionary dic = (TJSDictionary)obj;
+                foreach (var kv in dic.dic)
+                {
+                    d.Add(kv.Key, kv.Value);
+                }
+                return new TJSVariable(new TJSDictionary(d));
+            }
+            else
+            {
+                return this;
+            }
+        }
+
+        public TJSVariable DeepClone()
+        {
+            if (vt == VarType.ARRAY)
+            {
+                var a = new List<TJSVariable>();
+                for (int i = 0; i < ((TJSArray)obj).arr.Count;i++)
+                {
+                    a.Add(((TJSArray)obj).arr[i].DeepClone());
+                }
+                return new TJSVariable(new TJSArray(a));
+            }
+            else if (vt == VarType.DICTIONARY)
+            {
+                var d = new Dictionary<string, TJSVariable>();
+                TJSDictionary dic = (TJSDictionary)obj;
+                foreach (var kv in dic.dic)
+                {
+                    d.Add(kv.Key, kv.Value.DeepClone());
+                }
+                return new TJSVariable(new TJSDictionary(d));
+            }
+            else
+            {
+                return this;
             }
         }
 
@@ -3864,10 +4039,23 @@ namespace AVGParser.KRKR
                     return "";
             }
         }
+
+        public override bool Equals(object obj)
+        {
+            if(obj is TJSVariable)
+                return StrictEqual((TJSVariable)obj);
+            return false;
+        }
+
+        public override int GetHashCode()
+        {
+            return base.GetHashCode();
+        }
     }
 
     public class TJSVariableFormatProvider : IFormatProvider, ICustomFormatter
     {
+        int idx = 0;
         public string Format(string format, object arg, IFormatProvider formatProvider)
         {
             if (arg.GetType() != typeof(TJSVariable))
@@ -3879,6 +4067,21 @@ namespace AVGParser.KRKR
         {
             //UnityEngine.Debug.Log(formatType);
             return this;
+        }
+    }
+
+    public class CustomComparer<T> : IComparer<T>
+    {
+        Comparison<T> comp;
+
+        public CustomComparer(Comparison<T> c)
+        {
+            comp = c;
+        }
+
+        public int Compare(T x, T y)
+        {
+            return comp(x, y);
         }
     }
 
@@ -3897,6 +4100,26 @@ namespace AVGParser.KRKR
         public TJSClass strClass = new TJSClass();
         public TJSClass arrClass = new TJSClass();
         public TJSClass dicClass = new TJSClass();
+
+        public TJSVariable GetParam(int idx, TJSVariable[] param, int start, int num)
+        {
+            if (idx < 0)
+                idx += num;
+            if (idx < 0 || idx >= num || param[start + idx] == null)
+                return new TJSVariable(VarType.VOID);
+            return param[start + idx];
+        }
+
+        public TJSVariable GetParam(int idx, TJSVariable[] param, int start, int num, TJSVariable defaultValue)
+        {
+            if (idx < 0)
+                idx += num;
+            if (idx < 0 || idx >= num)
+                return defaultValue;
+            if (param[start + idx] == null)
+                return new TJSVariable(VarType.VOID);
+            return param[start + idx];
+        }
 
         //some common built-in function
         TJSVariable _toString(TJSVariable self, TJSVariable[] param, int start, int num)
@@ -3920,7 +4143,7 @@ namespace AVGParser.KRKR
             if (self.IsArray())
             {
                 var arr = self.ToArray();
-                int newlen = param[start].ToInt();
+                int newlen = GetParam(0, param, start, num).ToInt();
                 if (newlen < 0)
                     throw new TJSException("length cannot be negative");
                 if (newlen == 0)
@@ -3942,7 +4165,7 @@ namespace AVGParser.KRKR
                 {
                     throw new TJSException("need one parameter");
                 }
-                return new TJSVariable(self.ToString().StartsWith(param[start].ToString()));
+                return new TJSVariable(self.ToString().StartsWith(GetParam(0, param, start, num).ToString()));
             }
             throw new TJSException("context error, only string has this method");
         }
@@ -3957,8 +4180,8 @@ namespace AVGParser.KRKR
                 }
                 int startpos = 0;
                 if (num > 1)
-                    startpos = param[start + 1].ToInt();
-                string substr = param[start].ToString();
+                    startpos = GetParam(1, param, start, num).ToInt();
+                string substr = GetParam(0, param, start, num).ToString();
                 string str = self.ToString();
                 return new TJSVariable(str.IndexOf(substr, startpos));
             }
@@ -3991,10 +4214,10 @@ namespace AVGParser.KRKR
                 {
                     throw new TJSException("need at least one parameter");
                 }
-                int startpos = param[start].ToInt();
+                int startpos = GetParam(0, param, start, num).ToInt();
                 if (num > 1)
                 {
-                    int len = param[start + 1].ToInt();
+                    int len = GetParam(1, param, start, num).ToInt();
                     return new TJSVariable(self.ToString().Substring(startpos, len));
                 }
                 return new TJSVariable(self.ToString().Substring(startpos));
@@ -4016,16 +4239,219 @@ namespace AVGParser.KRKR
             if (self.IsString())
             {
                 string str = self.ToString();
-                List<object> args = new List<object>(num);
+                List<object> args = new List<object>();
                 for (int i = 0; i < num; i++)
                 {
-                    args.Add(param[start + i]);
+                    args.Add(GetParam(i, param, start, num));
                 }
                 return new TJSVariable(string.Format(new TJSVariableFormatProvider(), str, args.ToArray()));
             }
             throw new TJSException("context error, only string has this method");
         }
 
+        TJSVariable _Split(TJSVariable _, TJSVariable[] param, int start, int num)
+        {
+            var res = GetParam(1, param, start, num).ToString().Split(new string[] { GetParam(0, param, start, num).ToString() },
+                GetParam(3, param, start, num).ToBoolean() ? StringSplitOptions.RemoveEmptyEntries : StringSplitOptions.None);
+            return TJSVariable.ConvertFrom(res);
+        }
+
+        TJSVariable _Join(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            TJSArray arr = (TJSArray)self.obj;
+            List<string> args = new List<string>();
+            bool skipEmpty = GetParam(2, param, start, num).ToBoolean();
+            for (int i = 0; i < arr.arr.Count; i++)
+            {
+                if (skipEmpty && arr.arr[i].IsVoid())
+                    continue;
+                args.Add(arr.arr[i].ToString());
+            }
+            return new TJSVariable(string.Join(param[start].ToString(), args.ToArray()));
+        }
+
+        TJSVariable _Reverse(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            List<TJSVariable> newlist = new List<TJSVariable>();
+            List<TJSVariable> arr = ((TJSArray)self.obj).arr;
+            for(int i = arr.Count-1;i>=0;i--)
+            {
+                newlist.Add(arr[i]);
+            }
+            ((TJSArray)self.obj).arr = newlist;
+            return new TJSVariable(VarType.VOID);
+        }
+
+        TJSVariable _Sort(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            List<TJSVariable> arr = ((TJSArray)self.obj).arr;
+            string mode = GetParam(0, param, start, num).ToString();
+            bool stable = GetParam(2, param, start, num).ToBoolean();
+            Comparison<TJSVariable> comparison = (a,b)=>{
+                if (a == b)
+                    return 0;
+                if (a > b) 
+                    return 1; 
+                else
+                    return -1; 
+            };
+            if(mode == "-")
+            {
+                comparison = (a, b) => {
+                    if (a == b)
+                        return 0;
+                    if (a > b)
+                        return -1;
+                    else
+                        return 1;
+                };
+            }
+            if (mode == "0")
+            {
+                comparison = (a, b) => {
+                    var aa = a.ToDouble();
+                    var bb = b.ToDouble();
+                    if (Math.Abs(aa - bb) < 1e-14)
+                        return 0;
+                    if (aa > bb)
+                        return 1;
+                    else
+                        return -1;
+                };
+            }
+            if (mode == "9")
+            {
+                comparison = (a, b) => {
+                    var aa = a.ToDouble();
+                    var bb = b.ToDouble();
+                    if (Math.Abs(aa - bb) < 1e-14)
+                        return 0;
+                    if (aa > bb)
+                        return -1;
+                    else
+                        return 1;
+                };
+            }
+            if (mode == "a")
+            {
+                comparison = (a, b) => {
+                    var aa = a.ToString();
+                    var bb = b.ToString();
+                    return string.Compare(aa, bb);
+                };
+            }
+            if (mode == "z")
+            {
+                comparison = (a, b) => {
+                    var aa = a.ToString();
+                    var bb = b.ToString();
+                    return -string.Compare(aa, bb);
+                };
+            }
+            if (stable)
+            {
+                arr = arr.OrderBy(x => x, new CustomComparer<TJSVariable>(comparison)).ToList();
+            }
+            else
+            {
+                arr.Sort(comparison);
+            }
+            return new TJSVariable(VarType.VOID);
+        }
+
+        void AssignArray(TJSVariable self, TJSVariable p)
+        {
+            TJSArray arr = (TJSArray)self.obj;
+            if (p.vt == VarType.VOID)
+                arr.arr.Clear();
+            else if (p.vt == VarType.ARRAY)
+            {
+                arr.arr = new List<TJSVariable>();
+                arr.arr.AddRange(((TJSArray)p.obj).arr);
+            }
+            else if (p.vt == VarType.DICTIONARY)
+            {
+                arr.arr = new List<TJSVariable>();
+                TJSDictionary dic = (TJSDictionary)p.obj;
+                foreach (var kv in dic.dic)
+                {
+                    arr.arr.Add(new TJSVariable(kv.Key));
+                    arr.arr.Add(kv.Value);
+                }
+            }
+            else
+            {
+                arr.arr = new List<TJSVariable>();
+                arr.arr.Add(p);
+            }
+
+        }
+
+        TJSVariable _Assign(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            TJSVariable p = GetParam(0, param, start, num);
+            AssignArray(self, p);
+            return new TJSVariable(VarType.VOID);
+        }
+
+        TJSVariable _AssignStruct(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            TJSVariable p = GetParam(0, param, start, num);
+            AssignArray(self, p.DeepClone());
+            return new TJSVariable(VarType.VOID);
+        }
+
+        TJSVariable _Clear(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            ((TJSArray)self.obj).arr.Clear();
+            return new TJSVariable(VarType.VOID);
+        }
+
+        TJSVariable _Erase(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            int idx = GetParam(0, param, start, num).ToInt();
+            ((TJSArray)self.obj).arr.RemoveAt(idx);
+            return new TJSVariable(VarType.VOID);
+        }
+
+        TJSVariable _Remove(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            var v = GetParam(0, param, start, num);
+            bool all = GetParam(1, param, start, num, new TJSVariable(true)).ToBoolean();
+            if (!all)
+                ((TJSArray)self.obj).arr.Remove(v);
+            else
+                ((TJSArray)self.obj).arr.RemoveAll((x) => x.StrictEqual(v));
+            return new TJSVariable(VarType.VOID);
+        }
+
+        TJSVariable _Insert(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            int idx = GetParam(0, param, start, num).ToInt();
+            var arr = ((TJSArray)self.obj).arr;
+            if (idx < 0)
+                idx += arr.Count;
+            if (idx < 0 || idx >= arr.Count)
+                throw new TJSException("下标溢出");
+            arr.Insert(idx, GetParam(1, param, start, num));
+            return new TJSVariable(VarType.VOID);
+        }
+
+        TJSVariable _Add(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            var p = GetParam(0, param, start, num);
+            var arr = ((TJSArray)self.obj).arr;
+            arr.Add(p);
+            return new TJSVariable(arr.Count);
+        }
+
+        TJSVariable _Find(TJSVariable self, TJSVariable[] param, int start, int num)
+        {
+            var p = GetParam(0, param, start, num);
+            int idx = GetParam(1, param, start, num).ToInt();
+            var arr = ((TJSArray)self.obj).arr;
+            return new TJSVariable(arr.FindIndex(idx, (x) => x.StrictEqual(p)));
+        }
 
         void initNumMethod()
         {
@@ -4050,6 +4476,30 @@ namespace AVGParser.KRKR
             strClass.SetField("format", new TJSVariable(new TJSFunction(_Format, self)));
         }
 
+        void initArrayMethod()
+        {
+            var self = new TJSVariable(arrClass);
+            {
+                var prop = new TJSProperty(_get_length, _set_length, self);
+                arrClass.SetField("length", new TJSVariable(prop));
+                arrClass.SetField("count", new TJSVariable(prop));
+            }
+            arrClass.SetField("split", new TJSVariable(new TJSFunction(_Split, self)));
+            arrClass.SetField("join", new TJSVariable(new TJSFunction(_Join, self)));
+            arrClass.SetField("reverse", new TJSVariable(new TJSFunction(_Reverse, self)));
+            arrClass.SetField("sort", new TJSVariable(new TJSFunction(_Sort, self)));
+            arrClass.SetField("assign", new TJSVariable(new TJSFunction(_Assign, self)));
+            arrClass.SetField("copy", new TJSVariable(new TJSFunction(_Assign, self)));
+            arrClass.SetField("assignStruct", new TJSVariable(new TJSFunction(_AssignStruct, self)));
+            arrClass.SetField("deepcopy", new TJSVariable(new TJSFunction(_AssignStruct, self)));
+            arrClass.SetField("clear", new TJSVariable(new TJSFunction(_Clear, self)));
+            arrClass.SetField("erase", new TJSVariable(new TJSFunction(_Erase, self)));
+            arrClass.SetField("remove", new TJSVariable(new TJSFunction(_Remove, self)));
+            arrClass.SetField("insert", new TJSVariable(new TJSFunction(_Insert, self)));
+            arrClass.SetField("add", new TJSVariable(new TJSFunction(_Add, self)));
+            arrClass.SetField("find", new TJSVariable(new TJSFunction(_Find, self)));
+        }
+
         private TJSVM()
         {
             //make these class be extendable
@@ -4060,6 +4510,7 @@ namespace AVGParser.KRKR
 
             initNumMethod();
             initStringMethod();
+            initArrayMethod();
 
             _global.SetField("log", new TJSVariable(new TJSFunction(Log, new TJSVariable(VarType.VOID))));
         }
@@ -4071,7 +4522,7 @@ namespace AVGParser.KRKR
             {
                 if (i != 0)
                     str += ',';
-                str += param[i + start].ToString();
+                str += param[i + start].ToFormatString("");
             }
             UnityEngine.Debug.Log(str);
             return new TJSVariable(VarType.VOID);
@@ -4239,12 +4690,11 @@ namespace AVGParser.KRKR
                             break;
                         case VMCode.VM_CALL:
                             {
-                                if (stack[c.op1 + neg].vt != VarType.FUNCTION)
+                                if (stack[c.op1 + neg].vt != VarType.FUNCTION && stack[c.op1 + neg].vt != VarType.CLASS)
                                 {
                                     throw new TJSException("the object be called must be a function");
                                 }
-                                var func = (TJSFunction)stack[c.op1 + neg].obj;
-                                stack[c.op1 + neg] = func.CallAsFunc(stack, c.op2 + neg, c.op3 - c.op2);
+                                stack[c.op1 + neg] = stack[c.op1 + neg].obj.CallAsFunc(stack, c.op2 + neg, c.op3 - c.op2);
                             }
                             start++;
                             break;
@@ -4363,7 +4813,25 @@ namespace AVGParser.KRKR
                             start++;
                             break;
                         case VMCode.VM_NEW:
-                            //TODO
+                            {
+                                var cla = stack[c.op1 + neg];
+                                if(!cla.IsClass())
+                                {
+                                    if(c.op3 != -1)
+                                    {
+                                        cla = VM._global.getMember(code.consts[c.op3].ToString());
+                                    }
+                                    else if(cla.IsString())
+                                    {
+                                        cla = VM._global.getMember(cla.ToString());
+                                    }
+                                    if (!cla.IsClass())
+                                    {
+                                        throw new TJSException("new后应接一个类，或者是值为类的表达式");
+                                    }
+                                    stack[c.op1 + neg] = cla;
+                                }
+                            }
                             break;
                         case VMCode.VM_TYPEOF:
                             stack[c.op1 + neg] = new TJSVariable(stack[c.op2 + neg].GetTypeString());
@@ -4410,6 +4878,13 @@ namespace AVGParser.KRKR
                     if (start < code.codes.Count)
                         e.AddTrace(code.codes[start].line, code.codes[start].offset);
                     throw e;
+                }
+                catch (Exception e)
+                {
+                    TJSException ee = new TJSException(e.Message);
+                    if (start < code.codes.Count)
+                        ee.AddTrace(code.codes[start].line, code.codes[start].offset);
+                    throw ee;
                 }
             }
             return stack[2 + neg];
