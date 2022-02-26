@@ -203,7 +203,7 @@ namespace AVGParser.KRKR
         //current macro when parse macro command
         MacroInfo currentMacro = null;
         bool currentMacroValid = false;
-        
+
         CallStackInfo currentCall
         {
             get
@@ -296,7 +296,7 @@ namespace AVGParser.KRKR
                 scriptName = CurrentScript;
             if (!scriptCache.ContainsKey(scriptName))
             {
-                if(LoadScriptCallback != null)
+                if (LoadScriptCallback != null)
                 {
                     //should handle error inside the function
                     var text = LoadScriptCallback(scriptName);
@@ -310,7 +310,7 @@ namespace AVGParser.KRKR
                 else
                 {
                     var asset = UnityEngine.Resources.Load<UnityEngine.TextAsset>(scriptName);
-                    if(asset == null)
+                    if (asset == null)
                     {
                         UnityEngine.Debug.LogError($"cannot find script <{scriptName}>");
                         return;
@@ -326,7 +326,7 @@ namespace AVGParser.KRKR
                 }
             }
             currentScriptCache = scriptCache[scriptName];
-            if(scriptName != CurrentScript)
+            if (scriptName != CurrentScript)
             {
                 //clear if info
                 currentSave.TrueIfDepth = currentSave.AllIfDepth = 0;
@@ -336,7 +336,7 @@ namespace AVGParser.KRKR
                 label = label.Substring(1);
             currentCall.LabelName = label;
             int line = searchLabel(label);
-            if(line == -1)
+            if (line == -1)
             {
                 UnityEngine.Debug.LogError($"label <{label}> not exist in file <{scriptName}>");
                 currentCall.LineNumber = 0;
@@ -393,7 +393,7 @@ namespace AVGParser.KRKR
             }
         }
 
-        
+
         /// <summary>
         /// trigger a savepoint, save state internally
         /// </summary>
@@ -432,7 +432,7 @@ namespace AVGParser.KRKR
                     //label
                     string label = text.Substring(1);
                     proceedOffset(text.Length);
-                    if(currentMacro != null)
+                    if (currentMacro != null)
                     {
                         error("label cannot lies inside a macro");
                         continue;
@@ -566,9 +566,9 @@ namespace AVGParser.KRKR
                                     }
                                 }
                             }
-                            else if(value.StartsWith("%"))
+                            else if (value.StartsWith("%"))
                             {
-                                if(currentRunMacro == null)
+                                if (currentRunMacro == null)
                                 {
                                     error("cannot use %variable in non-macro context");
                                     return null;
@@ -576,11 +576,11 @@ namespace AVGParser.KRKR
                                 var valuelist = value.Split(new char[] { '|' }, StringSplitOptions.RemoveEmptyEntries);
                                 var dic = currentRunMacro?.MacroParams;
                                 value = "";
-                                foreach(var item in valuelist)
+                                foreach (var item in valuelist)
                                 {
-                                    if(item.StartsWith("%"))
+                                    if (item.StartsWith("%"))
                                     {
-                                        if(dic.ContainsKey(item.Substring(1)))
+                                        if (dic.ContainsKey(item.Substring(1)))
                                         {
                                             value = item.Substring(1);
                                             break;
@@ -638,7 +638,7 @@ namespace AVGParser.KRKR
                             int end = 0;
                             int ch = text[end];
                             int ch2 = text[end + 1];
-                            while(ch != '[' && !(ch == '/' && ch2 == '/'))
+                            while (ch != '[' && !(ch == '/' && ch2 == '/'))
                             {
                                 end++;
                                 if (end >= text.Length)
@@ -661,7 +661,7 @@ namespace AVGParser.KRKR
                     }
                     else
                     {
-                        if(currentMacro != null)
+                        if (currentMacro != null)
                         {
                             if (isLineHead && currentMacro.MacroLine.Length > 0)
                                 currentMacro.MacroLine += "\n";
@@ -677,7 +677,7 @@ namespace AVGParser.KRKR
         //handle jump, call, iscript etc
         bool processSpecialTags(Command cmd)
         {
-            if(currentMacro != null)
+            if (currentMacro != null)
             {
                 if (cmd.CommandName == "endmacro")
                 {
@@ -691,7 +691,7 @@ namespace AVGParser.KRKR
                 }
                 return true;
             }
-            if(!currentIf)
+            if (!currentIf)
             {
                 if (cmd.CommandName == "if")
                 {
@@ -712,7 +712,7 @@ namespace AVGParser.KRKR
                 }
                 else if (cmd.CommandName == "elseif")
                 {
-                    if(currentSave.AllIfDepth - currentSave.TrueIfDepth == 1)
+                    if (currentSave.AllIfDepth - currentSave.TrueIfDepth == 1)
                     {
                         if (currentSave.IfState.Peek() == IfState.Else)
                         {
@@ -733,7 +733,7 @@ namespace AVGParser.KRKR
                                     TJSVariable r = VM.Eval(exp);
                                     res = r.ToBoolean();
                                 }
-                                catch(Exception e)
+                                catch (Exception e)
                                 {
                                     error(e.Message);
                                     return true;
@@ -749,7 +749,7 @@ namespace AVGParser.KRKR
                         }
                     }
                 }
-                else if(cmd.CommandName == "endif")
+                else if (cmd.CommandName == "endif")
                 {
                     if (currentSave.AllIfDepth == currentSave.IfState.Count)
                         currentSave.IfState.Pop();
@@ -815,7 +815,7 @@ namespace AVGParser.KRKR
                         buf.Offset = 0;
                         currentCall.buffer.Add(buf);
                     }
-                    catch(Exception e)
+                    catch (Exception e)
                     {
                         error(e.Message);
                         return true;
@@ -836,7 +836,7 @@ namespace AVGParser.KRKR
                     {
                         VM.Eval(exp);
                     }
-                    catch(Exception e)
+                    catch (Exception e)
                     {
                         error(e.Message);
                         return true;
@@ -859,7 +859,7 @@ namespace AVGParser.KRKR
                         TJSVariable r = VM.Eval(exp);
                         res = r.ToBoolean();
                     }
-                    catch(Exception e)
+                    catch (Exception e)
                     {
                         error(e.Message);
                         return true;
@@ -986,10 +986,10 @@ namespace AVGParser.KRKR
             else if (cmd.CommandName == "iscript")
             {
                 string exp = "";
-                while(true)
+                while (true)
                 {
                     string text = getCurLine();
-                    if(text == null)
+                    if (text == null)
                     {
                         error("[iscript] need [endscript]");
                     }
@@ -1142,7 +1142,7 @@ namespace AVGParser.KRKR
                 return currentScriptCache.labelmap[label];
             if (currentScriptCache.parseOver)
                 return -1;
-            for(int i=currentScriptCache.parseLineNumber;i<currentScriptCache.lines.Length;i++)
+            for (int i = currentScriptCache.parseLineNumber; i < currentScriptCache.lines.Length; i++)
             {
                 var text = currentScriptCache.lines[i];
                 if (text.Length > 0 && text[0] == '*')

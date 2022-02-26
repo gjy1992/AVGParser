@@ -281,6 +281,11 @@ namespace AVGParser.KRKR
 
         internal TJSVariable[] defaultParam = null;
 
+        protected TJSFunction()
+        {
+
+        }
+
         public TJSFunction(TJSFunction func)
         {
             closure = func.closure;
@@ -410,7 +415,7 @@ namespace AVGParser.KRKR
         public override TJSVariable getMember(string name)
         {
             var v = dic[name];
-            if(v.vt == VarType.PROPERTY)
+            if (v.vt == VarType.PROPERTY)
             {
                 return ((TJSProperty)v.obj).GetValue();
             }
@@ -482,7 +487,7 @@ namespace AVGParser.KRKR
 
         public override void setMember(string name, TJSVariable value)
         {
-            if(localStack[localvar[name]].vt == VarType.PROPERTY)
+            if (localStack[localvar[name]].vt == VarType.PROPERTY)
             {
                 ((TJSProperty)localStack[localvar[name]].obj).SetValue(value);
             }
@@ -591,17 +596,41 @@ namespace AVGParser.KRKR
 
         public TJSProperty(Func<TJSVariable, TJSVariable[], int, int, TJSVariable> getfunc, Func<TJSVariable, TJSVariable[], int, int, TJSVariable> setfunc, TJSVariable _this)
         {
-            if(getfunc == null && setfunc == null)
+            if (getfunc == null && setfunc == null)
             {
                 throw new TJSException("cannot set a null property");
             }
-            if(getfunc != null)
+            if (getfunc != null)
             {
                 get = new TJSFunction(getfunc, _this);
             }
-            if(setfunc != null)
+            if (setfunc != null)
             {
                 set = new TJSFunction(setfunc, _this);
+            }
+        }
+
+        public void addGetFunc(Func<TJSVariable, TJSVariable[], int, int, TJSVariable> getfunc)
+        {
+            if (getfunc != null)
+            {
+                get = new TJSFunction(getfunc, _this);
+            }
+            else
+            {
+                get = null;
+            }
+        }
+
+        public void addSetFunc(Func<TJSVariable, TJSVariable[], int, int, TJSVariable> setfunc)
+        {
+            if (setfunc != null)
+            {
+                set = new TJSFunction(setfunc, _this);
+            }
+            else
+            {
+                set = null;
             }
         }
 
@@ -661,7 +690,7 @@ namespace AVGParser.KRKR
             {
                 while (arr.Count < name)
                 {
-                    arr.Add(new TJSVariable());
+                    arr.Add(new TJSVariable(VarType.VOID));
                 }
                 arr.Add(value);
             }
@@ -785,7 +814,7 @@ namespace AVGParser.KRKR
         {
             defineClass = def;
             isInstance = true;
-            foreach(var kv in def.defineVars)
+            foreach (var kv in def.defineVars)
             {
                 members.Add(kv.Key, kv.Value);
             }
@@ -795,7 +824,7 @@ namespace AVGParser.KRKR
 
         public virtual TJSVariable CreateInstance(TJSVariable[] param, int start, int length)
         {
-            if(!canInstantiate)
+            if (!canInstantiate)
             {
                 throw new TJSException("该类<" + name + ">不能实例化");
             }
@@ -842,7 +871,7 @@ namespace AVGParser.KRKR
                         return true;
                 }
             }
-            v = new TJSVariable();
+            v = new TJSVariable(VarType.VOID);
             return false;
         }
 
@@ -864,7 +893,7 @@ namespace AVGParser.KRKR
                 }
                 return v;
             }
-            else if(defineClass != null)
+            else if (defineClass != null)
             {
                 if (defineClass.hasMemberFunc(name, out v))
                 {
@@ -909,14 +938,44 @@ namespace AVGParser.KRKR
             SetField(name.ToString(), value);
         }
 
+        public virtual bool SetFieldForChildren(string name, TJSVariable value, TJSClass child)
+        {
+            if(members.ContainsKey(name))
+            {
+                if (members[name].vt == VarType.PROPERTY)
+                {
+                    var prop = new TJSProperty((TJSProperty)members[name].obj, child, new TJSVariable(child));
+                    prop.SetValue(value);
+                }
+                return false;
+            }
+            if (defineClass != null)
+            {
+                return defineClass.SetFieldForChildren(name, value, child);
+            }
+            if (parentClass != null)
+            {
+                foreach (var p in parentClass)
+                {
+                    if (p.SetFieldForChildren(name, value, child))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         public override void SetField(string name, TJSVariable value)
         {
-            members[name] = value;
+            bool r = SetFieldForChildren(name, value, this);
+            if (!r)
+                setMember(name, value);
         }
 
         public override void setMember(string name, TJSVariable value)
         {
-            SetField(name, value);
+            members[name] = value;
         }
 
         public override TJSVariable getMember(string name)
@@ -980,7 +1039,7 @@ namespace AVGParser.KRKR
                             {
                                 return new TJSVariable(new TJSFunction((TJSFunction)v.obj, null, new TJSVariable(str)));
                             }
-                            else if(v.vt == VarType.PROPERTY)
+                            else if (v.vt == VarType.PROPERTY)
                             {
                                 var prop = new TJSProperty((TJSProperty)v.obj, null, new TJSVariable(str));
                                 return prop.GetValue();
@@ -1071,7 +1130,7 @@ namespace AVGParser.KRKR
             else if (name >= -arr.arr.Count && name < 0)
                 return arr.arr[name + arr.arr.Count];
             else
-                return new TJSVariable();
+                return new TJSVariable(VarType.VOID);
         }
 
         public override TJSVariable GetField(string name)
@@ -1116,7 +1175,7 @@ namespace AVGParser.KRKR
                 {
                     if (name >= 100000)
                         throw new TJSException("array size exceed 100000");
-                    arr.arr.AddRange(Enumerable.Repeat(new TJSVariable(), name + 1 - arr.arr.Count));
+                    arr.arr.AddRange(Enumerable.Repeat(new TJSVariable(VarType.VOID), name + 1 - arr.arr.Count));
                 }
                 arr.arr[name] = v;
             }
@@ -1126,7 +1185,7 @@ namespace AVGParser.KRKR
                 {
                     if (name < -100000)
                         throw new TJSException("array size exceed 100000");
-                    arr.arr.AddRange(Enumerable.Repeat(new TJSVariable(), -name - arr.arr.Count));
+                    arr.arr.AddRange(Enumerable.Repeat(new TJSVariable(VarType.VOID), -name - arr.arr.Count));
                 }
                 arr.arr[name + arr.arr.Count] = v;
             }
@@ -1147,7 +1206,7 @@ namespace AVGParser.KRKR
                         }
                         else if (l > arr.arr.Count)
                         {
-                            arr.arr.AddRange(Enumerable.Repeat(new TJSVariable(), l - arr.arr.Count));
+                            arr.arr.AddRange(Enumerable.Repeat(new TJSVariable(VarType.VOID), l - arr.arr.Count));
                         }
                     }
                     break;
@@ -2559,7 +2618,7 @@ namespace AVGParser.KRKR
                                         e.AddTrace(next.line, next.pos);
                                         throw e;
                                     }
-                                    if(varnames.Contains(next.name))
+                                    if (varnames.Contains(next.name))
                                     {
                                         var e = new TJSException("duplicate parameter name");
                                         e.AddTrace(next.line, next.pos);
@@ -2646,7 +2705,7 @@ namespace AVGParser.KRKR
                                 compiler.ilcode.AddCode(VMCode.VM_COPY, pos, dest, 0, token.line, token.pos);
                             }
                         }
-                        else if(compiler.closure != null)
+                        else if (compiler.closure != null)
                         {
                             compiler.ilcode.AddCode(VMCode.VM_SETFUNCCLOSURE, dest, 0, 0, token.line, token.pos);
                         }
@@ -2936,6 +2995,11 @@ namespace AVGParser.KRKR
                             {
                                 //local var
                                 _parse(LBP[(int)token.op] - 1, dest);
+                                var d = compiler.ilcode.codes[compiler.ilcode.codes.Count - 1];
+                                if (d.code == VMCode.VM_DOTSET)
+                                {
+                                    compiler.ilcode.AddCode(VMCode.VM_DOT, dest, c.op2, c.op3, token.line, token.pos);
+                                }
                                 if (op == Operator.OP_SET)
                                 {
                                     compiler.ilcode.AddCode(VMCode.VM_COPY, c.op2, dest, 0, token.line, token.pos);
@@ -2956,6 +3020,11 @@ namespace AVGParser.KRKR
                                 }
                                 compiler.ilcode.codes[compiler.ilcode.codes.Count - 1] = c;
                                 _parse(LBP[(int)token.op] - 1, c.op1 + 1);
+                                var d = compiler.ilcode.codes[compiler.ilcode.codes.Count - 1];
+                                if (d.code == VMCode.VM_DOTSET)
+                                {
+                                    compiler.ilcode.AddCode(VMCode.VM_DOT, c.op1 + 1, c.op2, c.op3, token.line, token.pos);
+                                }
                                 if (op == Operator.OP_SET)
                                 {
                                     compiler.ilcode.AddCode(VMCode.VM_DOTSET, c.op2, c.op3, c.op1 + 1, token.line, token.pos);
@@ -3141,35 +3210,16 @@ namespace AVGParser.KRKR
         internal VarType vt;
 
         /// <summary>
-        /// build a void variable
-        /// </summary>
-        public TJSVariable()
-        {
-            vt = VarType.VOID;
-            num = 0;
-            str = null;
-            obj = null;
-        }
-
-        /// <summary>
         /// build a void or undefined variable
         /// </summary>
-        public TJSVariable(VarType dummy)
+        /// <param name="dummy">void or undefined</param>
+        internal TJSVariable(VarType dummy)
         {
             vt = dummy;
             num = 0;
             str = null;
             obj = null;
         }
-
-        public TJSVariable(TJSVariable v)
-        {
-            num = v.num;
-            str = v.str;
-            obj = v.obj;
-            vt = v.vt;
-        }
-
 
         public TJSVariable(int v)
         {
@@ -3319,7 +3369,7 @@ namespace AVGParser.KRKR
         {
             if (vt == VarType.VOID)
                 return false;
-            if(vt == VarType.NUMBER)
+            if (vt == VarType.NUMBER)
             {
                 if (v.vt == VarType.VOID)
                     return true;
@@ -3396,9 +3446,13 @@ namespace AVGParser.KRKR
                 case VarType.ARRAY:
                 case VarType.DICTIONARY:
                 case VarType.FUNCTION:
-                case VarType.CLASS:
                 case VarType.CLOSURE:
                     return obj == v.obj;
+                case VarType.CLASS:
+                    if ((obj is TJSClass4CSharp) && (v.obj is TJSClass4CSharp))
+                        return ((TJSClass4CSharp)obj).obj == ((TJSClass4CSharp)v.obj).obj;
+                    else
+                        return obj == v.obj;
                 case VarType.UNDEFINED:
                     return true;
                 default:
@@ -3406,18 +3460,9 @@ namespace AVGParser.KRKR
             }
         }
 
-        public TJSVariable RunAsFunc(TJSVariable[] param)
+        public TJSVariable RunAsFunc()
         {
-            if (vt == VarType.FUNCTION || vt == VarType.CLASS)
-                return obj.CallAsFunc(param, 0, param.Length);
-            throw new TJSException("the object be called must be a function");
-        }
-
-        public TJSVariable RunAsFunc(TJSVariable[] param, int start, int length)
-        {
-            if (vt == VarType.FUNCTION || vt == VarType.CLASS)
-                return obj.CallAsFunc(param, start, length);
-            throw new TJSException("the object be called must be a function");
+            throw new NotImplementedException();
         }
 
         public List<TJSVariable> ToArray()
@@ -3543,7 +3588,7 @@ namespace AVGParser.KRKR
             if (vt == VarType.ARRAY)
             {
                 var a = new List<TJSVariable>();
-                for (int i = 0; i < ((TJSArray)obj).arr.Count;i++)
+                for (int i = 0; i < ((TJSArray)obj).arr.Count; i++)
                 {
                     a.Add(((TJSArray)obj).arr[i].DeepClone());
                 }
@@ -3564,28 +3609,6 @@ namespace AVGParser.KRKR
                 return this;
             }
         }
-
-        public TJSVariable this[int i]
-        {
-            get { return Dot(new TJSVariable(i)); }
-            set { DotSet(new TJSVariable(i), value); }
-        }
-
-        public TJSVariable this[string i]
-        {
-            get { return Dot(new TJSVariable(i)); }
-            set { DotSet(new TJSVariable(i), value); }
-        }
-
-        public TJSVariable this[TJSVariable i]
-        {
-            get { return Dot(i); }
-            set { DotSet(i, value); }
-        }
-
-        public static implicit operator int(TJSVariable v) => v.ToInt();
-        public static implicit operator double(TJSVariable v) => v.ToDouble();
-        public static implicit operator string(TJSVariable v) => v.ToString();
 
         public TJSVariable Dot(TJSVariable name)
         {
@@ -3872,16 +3895,199 @@ namespace AVGParser.KRKR
                 }
                 return ret;
             }
-            else if(IsClass() && (obj is TJSClass4CSharp))
+            if(IsClass() && (obj is TJSClass4CSharp))
             {
-                TJSClass4CSharp csobj = (TJSClass4CSharp)obj;
-                if (csobj.tp == type)
-                    return csobj.obj;
+                var c = (TJSClass4CSharp)obj;
+                if(c.tp == type)
+                {
+                    return c.obj;
+                }
             }
             throw new TJSException($"cannot convert to type {type.ToString()}");
         }
 
-        public T ConvertToType<T>()
+        public object TryConvertToType(Type type, out bool success)
+        {
+            success = true;
+            if (type == typeof(TJSVariable))
+                return this;
+            if (TypeUtils.IsNumericTypeAndNullable(type))
+            {
+                bool nullable = !TypeUtils.IsNumericType(type);
+                Type rawType = nullable ? Nullable.GetUnderlyingType(type) : type;
+                try
+                {
+                    double v = ToDouble();
+                    return Convert.ChangeType(v, rawType);
+                }
+                catch (TJSException e)
+                {
+                    if (nullable)
+                        return null;
+                    throw e;
+                }
+            }
+            else if (type == typeof(string) || Nullable.GetUnderlyingType(type) == typeof(string))
+            {
+                return ToString();
+            }
+            else if (TypeUtils.IsGenericList(type))
+            {
+                List<TJSVariable> arr;
+                try
+                {
+                    arr = ToArray();
+                }
+                catch (TJSException)
+                {
+                    return null;
+                }
+                if (type == typeof(List<TJSVariable>))
+                    return arr;
+                var ret = new List<object>();
+                var innerType = type.GenericTypeArguments[0];
+                foreach (var it in arr)
+                {
+                    ret.Add(it.ConvertToType(innerType));
+                }
+                return ret;
+            }
+            else if (TypeUtils.IsGenericDictionary(type))
+            {
+                Dictionary<string, TJSVariable> dic;
+                try
+                {
+                    dic = ToDic();
+                }
+                catch (TJSException)
+                {
+                    return null;
+                }
+                if (type == typeof(Dictionary<string, TJSVariable>))
+                    return dic;
+                var ret = new Dictionary<object, object>();
+                var keyType = type.GenericTypeArguments[0];
+                var valueType = type.GenericTypeArguments[1];
+                foreach (var it in dic)
+                {
+                    object key = it.Key;
+                    if (TypeUtils.IsNumericTypeAndNullable(keyType))
+                    {
+                        double v;
+                        double.TryParse(it.Key, out v);
+                        key = Convert.ChangeType(v, keyType);
+                    }
+                    else if (!(keyType == typeof(string) || Nullable.GetUnderlyingType(keyType) == typeof(string)))
+                    {
+                        throw new TJSException($"cannot convert key string to type {keyType.ToString()}");
+                    }
+                    ret[key] = it.Value.ConvertToType(valueType);
+                }
+                return ret;
+            }
+            if (IsClass() && (obj is TJSClass4CSharp))
+            {
+                var c = (TJSClass4CSharp)obj;
+                if (c.tp == type)
+                {
+                    return c.obj;
+                }
+            }
+            success = false;
+            return null;
+        }
+        public object TryConvertToTypeStrict(Type type, out bool success)
+        {
+            success = true;
+            if (type == typeof(TJSVariable))
+                return this;
+            if (TypeUtils.IsNumericTypeAndNullable(type) && vt == VarType.NUMBER)
+            {
+                bool nullable = !TypeUtils.IsNumericType(type);
+                Type rawType = nullable ? Nullable.GetUnderlyingType(type) : type;
+                try
+                {
+                    double v = ToDouble();
+                    return Convert.ChangeType(v, rawType);
+                }
+                catch (TJSException e)
+                {
+                    if (nullable)
+                        return null;
+                    throw e;
+                }
+            }
+            else if ((type == typeof(string) || Nullable.GetUnderlyingType(type) == typeof(string)) && vt == VarType.STRING)
+            {
+                return ToString();
+            }
+            else if (TypeUtils.IsGenericList(type))
+            {
+                List<TJSVariable> arr;
+                try
+                {
+                    arr = ToArray();
+                }
+                catch (TJSException)
+                {
+                    return null;
+                }
+                if (type == typeof(List<TJSVariable>))
+                    return arr;
+                var ret = new List<object>();
+                var innerType = type.GenericTypeArguments[0];
+                foreach (var it in arr)
+                {
+                    ret.Add(it.ConvertToType(innerType));
+                }
+                return ret;
+            }
+            else if (TypeUtils.IsGenericDictionary(type))
+            {
+                Dictionary<string, TJSVariable> dic;
+                try
+                {
+                    dic = ToDic();
+                }
+                catch (TJSException)
+                {
+                    return null;
+                }
+                if (type == typeof(Dictionary<string, TJSVariable>))
+                    return dic;
+                var ret = new Dictionary<object, object>();
+                var keyType = type.GenericTypeArguments[0];
+                var valueType = type.GenericTypeArguments[1];
+                foreach (var it in dic)
+                {
+                    object key = it.Key;
+                    if (TypeUtils.IsNumericTypeAndNullable(keyType))
+                    {
+                        double v;
+                        double.TryParse(it.Key, out v);
+                        key = Convert.ChangeType(v, keyType);
+                    }
+                    else if (!(keyType == typeof(string) || Nullable.GetUnderlyingType(keyType) == typeof(string)))
+                    {
+                        throw new TJSException($"cannot convert key string to type {keyType.ToString()}");
+                    }
+                    ret[key] = it.Value.ConvertToType(valueType);
+                }
+                return ret;
+            }
+            if (IsClass() && (obj is TJSClass4CSharp))
+            {
+                var c = (TJSClass4CSharp)obj;
+                if (c.tp == type)
+                {
+                    return c.obj;
+                }
+            }
+            success = false;
+            return null;
+        }
+
+        public T ConvertTyType<T>()
         {
             return (T)ConvertToType(typeof(T));
         }
@@ -3915,11 +4121,11 @@ namespace AVGParser.KRKR
             return false;
         }
 
-        public static TJSVariable ConvertFromType(Type type, object o)
+        public static TJSVariable ConvertFromType(Type type, object o, bool seeObjectAsCSharp)
         {
             if (o == null)
             {
-                return new TJSVariable();
+                return new TJSVariable(VarType.VOID);
             }
             else if (TypeUtils.IsNumericTypeAndNullable(type))
             {
@@ -3929,7 +4135,7 @@ namespace AVGParser.KRKR
             {
                 return new TJSVariable((string)o);
             }
-            else if (TypeUtils.IsGenericList(type))
+            else if (!seeObjectAsCSharp && TypeUtils.IsGenericList(type))
             {
                 Type innerType = type.GenericTypeArguments[0];
                 if (innerType == typeof(TJSVariable))
@@ -3937,13 +4143,13 @@ namespace AVGParser.KRKR
                 var arr = new List<TJSVariable>();
                 foreach (var it in (o as IList))
                 {
-                    arr.Add(ConvertFromType(innerType, it));
+                    arr.Add(ConvertFromType(innerType, it, false));
                 }
                 return new TJSVariable(arr);
             }
-            else if (TypeUtils.IsGenericDictionary(type))
+            else if (!seeObjectAsCSharp && TypeUtils.IsGenericDictionary(type))
             {
-                //var keyType = type.GenericTypeArguments[0];
+                var keyType = type.GenericTypeArguments[0];
                 var valueType = type.GenericTypeArguments[1];
                 if (type == typeof(Dictionary<string, TJSVariable>))
                     return new TJSVariable((Dictionary<string, TJSVariable>)o);
@@ -3951,25 +4157,41 @@ namespace AVGParser.KRKR
                 IDictionary d = (IDictionary)o;
                 foreach (var it in d.Keys)
                 {
-                    dic[it.ToString()] = ConvertFromType(valueType, d[it]);
+                    dic[it.ToString()] = ConvertFromType(valueType, d[it], false);
                 }
                 return new TJSVariable(dic);
             }
-            throw new TJSException($"cannot convert from type {type.ToString()}");
+            if(!seeObjectAsCSharp)
+                throw new TJSException($"cannot convert from type {type.ToString()}");
+            return TJSVM.VM.WrapCSharpObject(o);
         }
 
         public static TJSVariable ConvertFrom<T>(object o)
         {
             if (o == null)
-                return new TJSVariable();
-            return ConvertFromType(typeof(T), o);
+                return new TJSVariable(VarType.VOID);
+            return ConvertFromType(typeof(T), o, false);
+        }
+
+        public static TJSVariable ConvertFrom<T>(object o, bool seeObjectAsCSharp)
+        {
+            if (o == null)
+                return new TJSVariable(VarType.VOID);
+            return ConvertFromType(typeof(T), o, true);
         }
 
         public static TJSVariable ConvertFrom(object o)
         {
             if (o == null)
-                return new TJSVariable();
-            return ConvertFromType(o.GetType(), o);
+                return new TJSVariable(VarType.VOID);
+            return ConvertFromType(o.GetType(), o, false);
+        }
+
+        public static TJSVariable ConvertFrom(object o, bool seeObjectAsCSharp)
+        {
+            if (o == null)
+                return new TJSVariable(VarType.VOID);
+            return ConvertFromType(o.GetType(), o, true);
         }
 
         string getPrintStr(string str)
@@ -4098,7 +4320,7 @@ namespace AVGParser.KRKR
 
         public override bool Equals(object obj)
         {
-            if(obj is TJSVariable)
+            if (obj is TJSVariable)
                 return StrictEqual((TJSVariable)obj);
             return false;
         }
@@ -4157,14 +4379,15 @@ namespace AVGParser.KRKR
         public TJSClass arrClass = new TJSClass();
         public TJSClass dicClass = new TJSClass();
 
-        public Dictionary<Type, TJSClass4CSharp> CSharpClassmap = new Dictionary<Type, TJSClass4CSharp>();
+        Dictionary<string, TJSClass4CSharp> registerCSharpClass = new Dictionary<string, TJSClass4CSharp>();
 
+#region BuiltinFunction
         public TJSVariable GetParam(int idx, TJSVariable[] param, int start, int num)
         {
             if (idx < 0)
                 idx += num;
             if (idx < 0 || idx >= num || param[start + idx] == null)
-                return new TJSVariable();
+                return new TJSVariable(VarType.VOID);
             return param[start + idx];
         }
 
@@ -4175,7 +4398,7 @@ namespace AVGParser.KRKR
             if (idx < 0 || idx >= num)
                 return defaultValue;
             if (param[start + idx] == null)
-                return new TJSVariable();
+                return new TJSVariable(VarType.VOID);
             return param[start + idx];
         }
 
@@ -4209,17 +4432,17 @@ namespace AVGParser.KRKR
                 else if (newlen < arr.Count)
                     arr.RemoveRange(newlen, arr.Count - newlen);
                 else if (newlen > arr.Count)
-                    arr.AddRange(Enumerable.Repeat(new TJSVariable(), newlen - arr.Count));
-                return new TJSVariable();
+                    arr.AddRange(Enumerable.Repeat(new TJSVariable(VarType.VOID), newlen - arr.Count));
+                return new TJSVariable(VarType.VOID);
             }
             throw new TJSException("context error, only array'length can be set");
         }
 
         TJSVariable _StartsWith(TJSVariable self, TJSVariable[] param, int start, int num)
         {
-            if(self.IsString())
+            if (self.IsString())
             {
-                if(num == 0)
+                if (num == 0)
                 {
                     throw new TJSException("need one parameter");
                 }
@@ -4332,12 +4555,12 @@ namespace AVGParser.KRKR
         {
             List<TJSVariable> newlist = new List<TJSVariable>();
             List<TJSVariable> arr = ((TJSArray)self.obj).arr;
-            for(int i = arr.Count-1;i>=0;i--)
+            for (int i = arr.Count - 1; i >= 0; i--)
             {
                 newlist.Add(arr[i]);
             }
             ((TJSArray)self.obj).arr = newlist;
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         TJSVariable _Sort(TJSVariable self, TJSVariable[] param, int start, int num)
@@ -4345,15 +4568,15 @@ namespace AVGParser.KRKR
             List<TJSVariable> arr = ((TJSArray)self.obj).arr;
             string mode = GetParam(0, param, start, num).ToString();
             bool stable = GetParam(2, param, start, num).ToBoolean();
-            Comparison<TJSVariable> comparison = (a,b)=>{
+            Comparison<TJSVariable> comparison = (a, b) => {
                 if (a == b)
                     return 0;
-                if (a > b) 
-                    return 1; 
+                if (a > b)
+                    return 1;
                 else
-                    return -1; 
+                    return -1;
             };
-            if(mode == "-")
+            if (mode == "-")
             {
                 comparison = (a, b) => {
                     if (a == b)
@@ -4414,7 +4637,7 @@ namespace AVGParser.KRKR
             {
                 arr.Sort(comparison);
             }
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         void AssignArray(TJSVariable self, TJSVariable p)
@@ -4449,27 +4672,27 @@ namespace AVGParser.KRKR
         {
             TJSVariable p = GetParam(0, param, start, num);
             AssignArray(self, p);
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         TJSVariable _AssignStruct(TJSVariable self, TJSVariable[] param, int start, int num)
         {
             TJSVariable p = GetParam(0, param, start, num);
             AssignArray(self, p.DeepClone());
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         TJSVariable _Clear(TJSVariable self, TJSVariable[] param, int start, int num)
         {
             ((TJSArray)self.obj).arr.Clear();
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         TJSVariable _Erase(TJSVariable self, TJSVariable[] param, int start, int num)
         {
             int idx = GetParam(0, param, start, num).ToInt();
             ((TJSArray)self.obj).arr.RemoveAt(idx);
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         TJSVariable _Remove(TJSVariable self, TJSVariable[] param, int start, int num)
@@ -4480,7 +4703,7 @@ namespace AVGParser.KRKR
                 ((TJSArray)self.obj).arr.Remove(v);
             else
                 ((TJSArray)self.obj).arr.RemoveAll((x) => x.StrictEqual(v));
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         TJSVariable _Insert(TJSVariable self, TJSVariable[] param, int start, int num)
@@ -4492,7 +4715,7 @@ namespace AVGParser.KRKR
             if (idx < 0 || idx >= arr.Count)
                 throw new TJSException("下标溢出");
             arr.Insert(idx, GetParam(1, param, start, num));
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         TJSVariable _Add(TJSVariable self, TJSVariable[] param, int start, int num)
@@ -4510,6 +4733,7 @@ namespace AVGParser.KRKR
             var arr = ((TJSArray)self.obj).arr;
             return new TJSVariable(arr.FindIndex(idx, (x) => x.StrictEqual(p)));
         }
+#endregion BuiltinFunction
 
         void initNumMethod()
         {
@@ -4570,7 +4794,7 @@ namespace AVGParser.KRKR
             initStringMethod();
             initArrayMethod();
 
-            _global.SetField("log", new TJSVariable(new TJSFunction(Log, new TJSVariable())));
+            _global.SetField("log", new TJSVariable(new TJSFunction(Log, new TJSVariable(VarType.VOID))));
         }
 
         private static TJSVariable Log(TJSVariable _this, TJSVariable[] param, int start, int length)
@@ -4583,7 +4807,7 @@ namespace AVGParser.KRKR
                 str += param[i + start].ToFormatString("");
             }
             UnityEngine.Debug.Log(str);
-            return new TJSVariable();
+            return new TJSVariable(VarType.VOID);
         }
 
         public static TJSVM VM
@@ -4723,7 +4947,7 @@ namespace AVGParser.KRKR
                             start++;
                             break;
                         case VMCode.VM_DOTSETVOID:
-                            stack[c.op1 + neg].DotSet(stack[c.op2 + neg], new TJSVariable());
+                            stack[c.op1 + neg].DotSet(stack[c.op2 + neg], new TJSVariable(VarType.VOID));
                             start++;
                             break;
                         case VMCode.VM_LOADCONST:
@@ -4731,11 +4955,18 @@ namespace AVGParser.KRKR
                             start++;
                             break;
                         case VMCode.VM_COPY:
-                            stack[c.op1 + neg] = stack[c.op2 + neg];
+                            if (stack[c.op1 + neg].vt == VarType.PROPERTY)
+                            {
+                                ((TJSProperty)stack[c.op1 + neg].obj).SetValue(stack[c.op2 + neg]);
+                            }
+                            else
+                            {
+                                stack[c.op1 + neg] = stack[c.op2 + neg];
+                            }
                             start++;
                             break;
                         case VMCode.VM_LOADVOID:
-                            stack[c.op1 + neg] = new TJSVariable();
+                            stack[c.op1 + neg] = new TJSVariable(VarType.VOID);
                             start++;
                             break;
                         case VMCode.VM_LOADTRUE:
@@ -4762,7 +4993,7 @@ namespace AVGParser.KRKR
                         case VMCode.VM_RETURN:
                             return stack[c.op1 + neg];
                         case VMCode.VM_RETURNVOID:
-                            return new TJSVariable();
+                            return new TJSVariable(VarType.VOID);
                         case VMCode.VM_JUMPFALSE:
                             if (!stack[c.op1 + neg].ToBoolean())
                                 start = c.op2;
@@ -4850,7 +5081,7 @@ namespace AVGParser.KRKR
                         case VMCode.VM_MAKEFUNC:
                             {
                                 var func = new TJSFunction((TJSFunction)stack[c.op1 + neg].obj);
-                                if(c.op3 > c.op2)
+                                if (c.op3 > c.op2)
                                     func.defaultParam = new TJSVariable[c.op3 - c.op2];
                                 else
                                     func.defaultParam = null;
@@ -4873,13 +5104,13 @@ namespace AVGParser.KRKR
                         case VMCode.VM_NEW:
                             {
                                 var cla = stack[c.op1 + neg];
-                                if(!cla.IsClass())
+                                if (!cla.IsClass())
                                 {
-                                    if(c.op3 != -1)
+                                    if (c.op3 != -1)
                                     {
                                         cla = VM._global.getMember(code.consts[c.op3].ToString());
                                     }
-                                    else if(cla.IsString())
+                                    else if (cla.IsString())
                                     {
                                         cla = VM._global.getMember(cla.ToString());
                                     }
@@ -4897,7 +5128,7 @@ namespace AVGParser.KRKR
                             break;
                         case VMCode.VM_DELETE:
                             stack[c.op1 + neg].Remove(stack[c.op2 + neg]);
-                            stack[c.op1 + neg] = new TJSVariable();
+                            stack[c.op1 + neg] = new TJSVariable(VarType.VOID);
                             start++;
                             break;
                         case VMCode.VM_INSTANCEOF:
@@ -4951,13 +5182,59 @@ namespace AVGParser.KRKR
         public TJSVariable Eval(string exp)
         {
             TJSIL code = parser.Parse(exp);
-            return Run(code, _global, new TJSVariable(), null);
+            return Run(code, _global, new TJSVariable(VarType.VOID), null);
         }
 
         public TJSVariable EvalInClosure(string exp, TJSClosure closure)
         {
             TJSIL code = parser.Parse(exp);
-            return Run(code, closure, new TJSVariable(), null);
+            return Run(code, closure, new TJSVariable(VarType.VOID), null);
+        }
+
+        public void AddCSharpClass(Type type, bool hasInstance, string varname)
+        {
+            var c = new TJSClass4CSharp(type, hasInstance);
+            registerCSharpClass.Add(varname, c);
+            _global.SetField(varname, new TJSVariable(c));
+        }
+
+        public void AddCSharpObjectAsStatic(object o, string varname)
+        {
+            var c = new TJSClass4CSharp(o);
+            registerCSharpClass.Add(varname, c);
+            _global.SetField(varname, new TJSVariable(c));
+        }
+
+        public TJSVariable WrapCSharpObject(object o)
+        {
+            string varname = o.GetType().Name;
+            if (!registerCSharpClass.ContainsKey(varname))
+            {
+                AddCSharpClass(o.GetType(), true, varname);
+            }
+            var defclass = registerCSharpClass[varname];
+            return new TJSVariable(new TJSClass4CSharp(defclass, o.GetType(), o));
+        }
+    }
+
+    public class TJSCSharpFunction : TJSFunction
+    {
+        internal List<MethodInfo> m;
+
+        TJSClass4CSharp csthis;
+
+        public TJSCSharpFunction(List<MethodInfo> m, TJSClass4CSharp _this) : base()
+        {
+            if (m != null)
+                this.m = m;
+            else
+                this.m = new List<MethodInfo>();
+            csthis = _this;
+        }
+
+        public override TJSVariable CallAsFunc(TJSVariable[] param, int start, int length)
+        {
+            return csthis.CallMethod(m, param, start, length);
         }
     }
 
@@ -4969,25 +5246,60 @@ namespace AVGParser.KRKR
 
         TJSFunction create = null;
 
-        internal TJSClass4CSharp(Type classType, bool hasInstance)
+        Dictionary<string, List<MethodInfo>> methodsInfo = new Dictionary<string, List<MethodInfo>>();
+
+        Dictionary<string, FieldInfo> fieldsInfo = new Dictionary<string, FieldInfo>();
+
+        Dictionary<string, PropertyInfo> propertiesInfo = new Dictionary<string, PropertyInfo>();
+
+        List<PropertyInfo> indexer = new List<PropertyInfo>();
+
+        internal TJSClass4CSharp(Type classType, bool hasInstance) : base()
         {
             tp = classType;
-            var methods = classType.GetMethods(BindingFlags.Public | BindingFlags.Static);
-            for (int i = 0; i < methods.Length; i++)
-            {
-                if (makeStaticFunc(methods[i], out TJSVariable v))
-                {
-                    members[methods[i].Name] = v;
-                }
-            }
             canInstantiate = hasInstance;
-            if(canInstantiate)
+            if (canInstantiate)
             {
                 makeCreateFunction();
             }
+            InitReflectionTable();
         }
 
-        private TJSClass4CSharp(TJSClass4CSharp defclass, Type classType, object o) : base(defclass)
+        internal TJSClass4CSharp(object o) : base()
+        {
+            tp = o.GetType();
+            obj = o;
+            canInstantiate = false;
+            InitReflectionTable();
+        }
+
+        protected void InitReflectionTable()
+        {
+            var methods = tp.GetMethods(BindingFlags.Public | BindingFlags.FlattenHierarchy | BindingFlags.Static | BindingFlags.Instance);
+            foreach(var m in methods)
+            {
+                if(!methodsInfo.ContainsKey(m.Name))
+                {
+                    methodsInfo[m.Name] = new List<MethodInfo>();
+                }
+                methodsInfo[m.Name].Add(m);
+            }
+            var props = tp.GetProperties(BindingFlags.Public | BindingFlags.FlattenHierarchy | BindingFlags.Static | BindingFlags.Instance);
+            foreach (var p in props)
+            {
+                if (p.GetIndexParameters().Length == 0)
+                    propertiesInfo[p.Name] = p;
+                else if (p.GetIndexParameters().Length == 1)
+                    indexer.Add(p);
+            }
+            var fields = tp.GetFields(BindingFlags.Public | BindingFlags.FlattenHierarchy | BindingFlags.Static | BindingFlags.Instance);
+            foreach(var f in fields)
+            {
+                fieldsInfo[f.Name] = f;
+            }
+        }
+
+        internal TJSClass4CSharp(TJSClass4CSharp defclass, Type classType, object o) : base(defclass)
         {
             tp = classType;
             obj = o;
@@ -5004,10 +5316,40 @@ namespace AVGParser.KRKR
             return res;
         }
 
+        internal static MethodInfo FindMatchMethod(MethodInfo[] methods, TJSVariable[] param, int start, int length, out List<object> args)
+        {
+            MethodInfo select = null;
+            args = new List<object>();
+            foreach (var m in methods)
+            {
+                args.Clear();
+                bool suc = true;
+                var p = m.GetParameters();
+                if (p.Length == length)
+                {
+                    for (int i = 0; i < length; i++)
+                    {
+                        args.Add(param[start + i].TryConvertToTypeStrict(p[i].ParameterType, out suc));
+                        if(!suc)
+                        {
+                            break;
+                        }
+                    }
+                    if(suc)
+                    {
+                        select = m;
+                        break;
+                    }
+                    continue;
+                }
+            }
+            return select;
+        }
+
         public bool makeCreateFunction()
         {
             var methods = tp.GetMethods(BindingFlags.Public | BindingFlags.CreateInstance);
-            if(methods.Length == 0)
+            if (methods.Length == 0)
             {
                 canInstantiate = false;
                 return false;
@@ -5016,163 +5358,222 @@ namespace AVGParser.KRKR
             {
                 create = new TJSFunction((TJSVariable _this, TJSVariable[] param, int start, int length) =>
                 {
-                    MethodInfo select = null;
-                    foreach(var m in methods)
+                    MethodInfo select = FindMatchMethod(methods, param, start, length, out List<object> args);
+                    if (select == null)
                     {
-                        if(m.GetParameters().Length == length)
-                        {
-                            select = m;
-                            break;
-                        }
+                        throw new TJSException("找不到相匹配的构造函数");
                     }
-                    if(select == null)
-                    {
-                        throw new TJSException("构造函数的自动反射只支持参数个数完全相同的第一个匹配构造函数");
-                    }
-                    var p = select.GetParameters();
-                    if (p.Length == 0)
-                    {
-                        var ret = select.Invoke(null, null);
-                        return new TJSVariable(new TJSClass4CSharp(this, tp, ret));
-                    }
-                    else
-                    {
-                        List<object> args = new List<object>();
-                        for (int i = 0; i < p.Length; i++)
-                        {
-                            if (i < length)
-                            {
-                                args.Add(param[start + i].ConvertToType(p[i].ParameterType));
-                            }
-                            else
-                            {
-                                args.Add((new TJSVariable()).ConvertToType(p[i].ParameterType));
-                            }
-                        }
-                        var ret = select.Invoke(null, args.ToArray());
-                        return new TJSVariable(new TJSClass4CSharp(this, tp, ret));
-                    }
+                    var ret = select.Invoke(null, args.ToArray());
+                    return new TJSVariable(new TJSClass4CSharp(this, tp, ret));
                 }, new TJSVariable(this));
             }
             return true;
         }
 
-        public static bool makeStaticFunc(MethodInfo m, out TJSVariable func)
+        public TJSVariable CallMethod(List<MethodInfo> ms, TJSVariable[] param, int start, int length, object _this)
         {
-            var p = m.GetParameters();
+            MethodInfo m = FindMatchMethod(ms.ToArray(), param, start, length, out List<object> args);
             var r = m.ReturnType;
-            //if(r != null && r != typeof(void) && !TJSVariable.IsConvertable(r))
-            //{
-            //    func = new TJSVariable();
-            //    return false;
-            //}
-            //foreach (var it in p)
-            //{
-            //    if(!TJSVariable.IsConvertable(it.ParameterType))
-            //    {
-            //        func = new TJSVariable();
-            //        return false;
-            //    }
-            //}
-            if (p.Length == 0)
+            if (r == null || r == typeof(void))
             {
-                func = new TJSVariable(new TJSFunction((TJSVariable _this, TJSVariable[] param, int start, int length) =>
-                {
-                    if(r == null || r == typeof(void))
-                    {
-                        m.Invoke(null, null);
-                        return new TJSVariable();
-                    }
-                    var ret = m.Invoke(null, null);
-                    return TJSVariable.ConvertFromType(r, ret);
-                }, new TJSVariable()));
-                return true;
+                m.Invoke(_this, args.ToArray());
+                return new TJSVariable(VarType.VOID);
+            }
+            var ret = m.Invoke(_this, args.ToArray());
+            return TJSVariable.ConvertFromType(r, ret, true);
+        }
+
+        internal TJSVariable CallMethod(List<MethodInfo> m, TJSVariable[] param, int start, int length)
+        {
+            return CallMethod(m, param, start, length, obj);
+        }
+
+
+        public TJSVariable GetFieldValue(FieldInfo f, object _this)
+        {
+            return TJSVariable.ConvertFrom(f.GetValue(_this), true);
+        }
+
+        public void SetFieldValue(FieldInfo f, TJSVariable v, object _this)
+        {
+            f.SetValue(_this, v.ConvertToType(f.FieldType));
+        }
+
+        public TJSVariable GetPropertyValue(PropertyInfo p, object _this)
+        {
+            return TJSVariable.ConvertFrom(p.GetValue(_this), true);
+        }
+
+        public void SetPropertyValue(PropertyInfo p, TJSVariable v, object _this)
+        {
+            p.SetValue(_this, v.ConvertToType(p.PropertyType));
+        }
+
+        public TJSVariable GetIndexerValue(TJSVariable idx, object _this)
+        {
+            if (indexer.Count == 0)
+            {
+                return new TJSVariable(VarType.UNDEFINED);
+            }
+            else if (indexer.Count == 1)
+            {
+                var res = indexer[0].GetValue(_this, new object[] { idx.ConvertToType(indexer[0].GetIndexParameters()[0].ParameterType) });
+                return TJSVariable.ConvertFrom(res);
             }
             else
             {
-                func = new TJSVariable(new TJSFunction((TJSVariable _this, TJSVariable[] param, int start, int length) =>
+                foreach(var index in indexer)
                 {
-                    List<object> args = new List<object>();
-                    for (int i = 0; i < p.Length; i++)
+                    var pt = index.GetIndexParameters()[0].ParameterType;
+                    bool suc;
+                    object v = idx.TryConvertToTypeStrict(pt, out suc);
+                    if(suc)
                     {
-                        if (i < length)
-                        {
-                            args.Add(param[start + i].ConvertToType(p[i].ParameterType));
-                        }
-                        else
-                        {
-                            args.Add((new TJSVariable()).ConvertToType(p[i].ParameterType));
-                        }
+                        var res = index.GetValue(_this, new object[] { idx.ConvertToType(pt) });
+                        return TJSVariable.ConvertFrom(res);
                     }
-                    if (r == null || r == typeof(void))
-                    {
-                        m.Invoke(null, args.ToArray());
-                        return new TJSVariable();
-                    }
-                    var ret = m.Invoke(null, args.ToArray());
-                    return TJSVariable.ConvertFromType(r, ret);
-                }, new TJSVariable()));
-                return true;
+                }
+                return new TJSVariable(VarType.UNDEFINED);
             }
         }
 
-        public static bool makeNormalFunc(MethodInfo m, out TJSVariable func)
+        public bool SetIndexerValue(TJSVariable idx, TJSVariable value, object _this)
         {
-            var p = m.GetParameters();
-            var r = m.ReturnType;
-            //if (r != null && r != typeof(void) && !TJSVariable.IsConvertable(r))
-            //{
-            //    func = new TJSVariable();
-            //    return false;
-            //}
-            //foreach (var it in p)
-            //{
-            //    if (!TJSVariable.IsConvertable(it.ParameterType))
-            //    {
-            //        func = new TJSVariable();
-            //        return false;
-            //    }
-            //}
-            if (p.Length == 0)
+            if (indexer.Count == 0)
             {
-                func = new TJSVariable(new TJSFunction((TJSVariable _this, TJSVariable[] param, int start, int length) =>
-                {
-                    if (r == null || r == typeof(void))
-                    {
-                        m.Invoke(null, null);
-                        return new TJSVariable();
-                    }
-                    var ret = m.Invoke(null, null);
-                    return TJSVariable.ConvertFromType(r, ret);
-                }, new TJSVariable()));
+                return false;
+            }
+            else if (indexer.Count == 1)
+            {
+                bool suc;
+                object o = idx.TryConvertToType(indexer[0].GetIndexParameters()[0].ParameterType, out suc);
+                if (!suc)
+                    return false;
+                indexer[0].SetValue(_this, o);
                 return true;
             }
             else
             {
-                func = new TJSVariable(new TJSFunction((TJSVariable _this, TJSVariable[] param, int start, int length) =>
+                foreach (var index in indexer)
                 {
-                    List<object> args = new List<object>();
-                    for (int i = 0; i < p.Length; i++)
+                    var pt = index.GetIndexParameters()[0].ParameterType;
+                    bool suc;
+                    object v = idx.TryConvertToTypeStrict(pt, out suc);
+                    if (suc)
                     {
-                        if (i < length)
-                        {
-                            args.Add(param[start + i].ConvertToType(p[i].ParameterType));
-                        }
-                        else
-                        {
-                            args.Add((new TJSVariable()).ConvertToType(p[i].ParameterType));
-                        }
+                        index.SetValue(_this, idx.ConvertToType(pt));
+                        return true;
                     }
-                    if (r == null || r == typeof(void))
-                    {
-                        m.Invoke(null, args.ToArray());
-                        return new TJSVariable();
-                    }
-                    var ret = m.Invoke(null, args.ToArray());
-                    return TJSVariable.ConvertFromType(r, ret);
-                }, new TJSVariable()));
-                return true;
+                }
+                return false;
             }
         }
+
+        // 暂不允许TJSClass4CSharp和脚本里的Class成员混用
+        public virtual TJSVariable GetFieldForChild(int name, TJSClass4CSharp _this)
+        {
+            return GetIndexerValue(new TJSVariable(name), _this.obj);
+        }
+
+        public override TJSVariable GetField(int name)
+        {
+            if (defineClass == null)
+                return GetFieldForChild(name, this);
+            else
+                return ((TJSClass4CSharp)defineClass).GetFieldForChild(name, this);
+        }
+
+        public virtual TJSVariable GetFieldForChild(string name, TJSClass4CSharp _this)
+        {
+            if(methodsInfo.ContainsKey(name))
+            {
+                return new TJSVariable(new TJSCSharpFunction(methodsInfo[name], _this));
+            }
+            if (propertiesInfo.ContainsKey(name))
+            {
+                return GetPropertyValue(propertiesInfo[name], _this.obj);
+            }
+            if (fieldsInfo.ContainsKey(name))
+            {
+                return GetFieldValue(fieldsInfo[name], _this.obj);
+            }
+            return GetIndexerValue(new TJSVariable(name), _this.obj);
+        }
+
+        public override TJSVariable GetField(string name)
+        {
+            if (defineClass == null)
+            {
+                if (methodsInfo.ContainsKey(name))
+                {
+                    return new TJSVariable(new TJSCSharpFunction(methodsInfo[name], this));
+                }
+                if (propertiesInfo.ContainsKey(name))
+                {
+                    return GetPropertyValue(propertiesInfo[name], obj);
+                }
+                if (fieldsInfo.ContainsKey(name))
+                {
+                    return GetFieldValue(fieldsInfo[name], obj);
+                }
+                return GetIndexerValue(new TJSVariable(name), obj);
+            }
+            else
+            {
+                var c = (TJSClass4CSharp)defineClass;
+                return c.GetFieldForChild(name, this);
+            }
+        }
+
+        public virtual void SetFieldForChild(int name, TJSVariable value, TJSClass4CSharp _this)
+        {
+            SetIndexerValue(new TJSVariable(name), value, _this.obj);
+        }
+
+        public override void SetField(int name, TJSVariable value)
+        {
+            SetIndexerValue(new TJSVariable(name), value, this);
+        }
+
+        public virtual void SetFieldForChild(string name, TJSVariable value, TJSClass4CSharp _this)
+        {
+            if (propertiesInfo.ContainsKey(name))
+            {
+                SetPropertyValue(propertiesInfo[name], value, _this.obj);
+            }
+            else if (fieldsInfo.ContainsKey(name))
+            {
+                SetFieldValue(fieldsInfo[name], value, _this.obj);
+            }
+            else
+            {
+                SetIndexerValue(new TJSVariable(name), value, _this.obj);
+            }
+        }
+
+        public override void SetField(string name, TJSVariable value)
+        {
+            if (defineClass == null)
+            {
+                if (propertiesInfo.ContainsKey(name))
+                {
+                    SetPropertyValue(propertiesInfo[name], value, obj);
+                }
+                else if (fieldsInfo.ContainsKey(name))
+                {
+                    SetFieldValue(fieldsInfo[name], value, obj);
+                }
+                else
+                {
+                    SetIndexerValue(new TJSVariable(name), value, obj);
+                }
+            }
+            else
+            {
+                var c = (TJSClass4CSharp)defineClass;
+                c.SetFieldForChild(name, value, this);
+            }
+        }
+
     }
 }
